@@ -1,0 +1,24 @@
+# Generated outputs
+outputs/
+!outputs/.gitkeep
+
+# Local workspace markers
+.codex
+
+# Local input samples / large working files
+data/
+*.pdf
+*.xlsx
+
+# Local model/cache directories
+models/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Local environments and secrets
+.env
+.venv/
+venv/

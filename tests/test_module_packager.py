@@ -1,0 +1,820 @@
+import json
+from pathlib import Path
+
+from bid_knowledge.parsing.module_packager import package_module_artifacts
+from bid_knowledge.schemas.models import ParsedTable, PdfTextBlock, ReusableCandidate
+
+
+def _candidate(
+    section_path: str,
+    source_page: int,
+    source_page_end: int,
+    source_container_title: str,
+    *,
+    from_history_bid: bool = True,
+    has_standard_template: bool = False,
+) -> ReusableCandidate:
+    return ReusableCandidate(
+        candidate_id=f"cand-{source_page}",
+        company_id="demo_company",
+        document_id="demo_doc",
+        rule_id=f"rule-{source_page}",
+        section_path=section_path,
+        from_history_bid=from_history_bid,
+        has_standard_template=has_standard_template,
+        title=section_path.split(" / ")[-1],
+        content="",
+        candidate_type="attachment",
+        reuse_method="附件召回",
+        reuse_level="long_term",
+        enter_long_term_library=True,
+        source_file="demo.pdf",
+        source_page=source_page,
+        source_page_end=source_page_end,
+        source_container_title=source_container_title,
+    )
+
+
+def _write_demo_pdf(path: Path, page_count: int) -> Path:
+    import fitz
+
+    doc = fitz.open()
+    try:
+        for index in range(page_count):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"demo page {index + 1}")
+        doc.save(path)
+    finally:
+        doc.close()
+    return path
+
+
+def test_package_module_artifacts_exports_named_items_under_module(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 商务评分标准涉及的支撑材料 / 一、履约能力评价 / 经营状况",
+            100,
+            101,
+            "3.8.1.2 企业整体经营状况优良",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=100, text="3.8.1.2 企业整体经营状况优良", bbox=[0, 10, 100, 20], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=100, text="（1）、企业发展稳健", bbox=[0, 30, 100, 40], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=101, text="（2）、具备优秀的团队", bbox=[0, 20, 100, 30], block_no=3),
+    ]
+    tables = [
+        ParsedTable(table_id="table-1", page_no=101, rows=[["姓名", "岗位"]], bbox=[10, 40, 200, 180]),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 100, "xref": 10, "width": 500, "height": 400, "rect": [10, 50, 150, 120], "ext": "jpeg"},
+        {"image_id": "img-2", "page_no": 100, "xref": 11, "width": 500, "height": 400, "rect": [10, 130, 150, 200], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    module_dir = tmp_path / "modules" / "商务评分标准涉及的支撑材料" / "一、履约能力评价" / "经营状况"
+    assert module_dir.exists()
+    assert (module_dir / "section_meta.json").exists()
+    assert (module_dir / "tables.json").exists()
+    assert (module_dir / "images.json").exists()
+
+    table_item = module_dir / "table_items" / "具备优秀的团队_表1.json"
+    image_item_1 = module_dir / "image_items" / "企业发展稳健_图1.json"
+    image_item_2 = module_dir / "image_items" / "企业发展稳健_图2.json"
+    image_file_1 = module_dir / "image_items" / "企业发展稳健_图1.jpeg"
+    image_file_2 = module_dir / "image_items" / "企业发展稳健_图2.jpeg"
+
+    assert table_item.exists()
+    assert image_item_1.exists()
+    assert image_item_2.exists()
+    assert image_file_1.exists()
+    assert image_file_2.exists()
+
+
+def test_package_module_artifacts_uses_previous_page_heading_when_current_page_has_no_new_heading(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人（单位负责人）身份证（扫描件）",
+            200,
+            201,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=200, text="（3.1）、安全生产标准化证书", bbox=[0, 20, 100, 30], block_no=1),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 201, "xref": 20, "width": 600, "height": 500, "rect": [10, 40, 150, 180], "ext": "png"},
+        {"image_id": "img-2", "page_no": 201, "xref": 21, "width": 600, "height": 500, "rect": [10, 190, 150, 330], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    module_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人（单位负责人）身份证（扫描件）" / "image_items"
+    assert (module_dir / "安全生产标准化证书_图1.json").exists()
+    assert (module_dir / "安全生产标准化证书_图2.json").exists()
+
+
+def test_package_module_artifacts_skips_non_history_items_and_writes_template_capture(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 商务评分标准涉及的支撑材料 / 一、履约能力评价 / 售后服务",
+            10,
+            10,
+            "3.8.2 售后服务",
+            from_history_bid=True,
+            has_standard_template=True,
+        ),
+        _candidate(
+            "商务文件 / 商务评分标准涉及的支撑材料 / 二、高质量发展评价 / 绿色发展",
+            11,
+            11,
+            "3.9.1 绿色发展",
+            from_history_bid=False,
+        ),
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=10, text="（1）、售后服务承诺", bbox=[0, 10, 100, 20], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=10, text="承诺内容正文", bbox=[0, 30, 100, 40], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=11, text="绿色发展", bbox=[0, 10, 100, 20], block_no=3),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["商务偏差表", "投标保证保险", "补充文件", "法定代表人授权委托书"],
+    )
+
+    kept_dir = tmp_path / "modules" / "商务评分标准涉及的支撑材料" / "一、履约能力评价" / "售后服务"
+    skipped_dir = tmp_path / "modules" / "商务评分标准涉及的支撑材料" / "二、高质量发展评价" / "绿色发展"
+    assert kept_dir.exists()
+    assert not skipped_dir.exists()
+    assert (kept_dir / "source_capture.json").exists()
+    assert (tmp_path / "modules" / "商务偏差表").exists()
+    assert (tmp_path / "modules" / "投标保证保险").exists()
+
+
+def test_package_module_artifacts_precreates_empty_history_tree_dirs(tmp_path: Path) -> None:
+    package_module_artifacts(
+        candidates=[],
+        blocks=[],
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["商务偏差表", "投标保证保险", "补充文件", "法定代表人授权委托书"],
+        planned_section_paths=[
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 一、履约能力评价 / 经营状况",
+            "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表 / 利润表",
+            "商务文件 / 法定代表人授权委托书 / 被授权人身份证等有效身份证件（扫描件）",
+        ],
+    )
+
+    assert (tmp_path / "modules" / "商务偏差表" / "module_meta.json").exists()
+    assert (tmp_path / "modules" / "投标保证保险" / "module_meta.json").exists()
+    assert (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "一、履约能力评价"
+        / "经营状况"
+        / "section_meta.json"
+    ).exists()
+    assert (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "财务状况"
+        / "经会计师事务所或审计机构审计的财务会计报表"
+        / "利润表"
+        / "section_meta.json"
+    ).exists()
+    assert (
+        tmp_path
+        / "modules"
+        / "法定代表人授权委托书"
+        / "被授权人身份证等有效身份证件（扫描件）"
+        / "section_meta.json"
+    ).exists()
+
+
+def test_package_module_artifacts_filters_repeated_header_logo_images(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 一、履约能力评价 / 经营状况",
+            1,
+            20,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="（1.1）、部分业主出具的运行报告16份", bbox=[0, 80, 100, 90], block_no=1),
+    ]
+    repeated_logo = [
+        {
+            "image_id": f"logo-{page}",
+            "page_no": page,
+            "xref": 16,
+            "width": 154,
+            "height": 70,
+            "rect": [72.0, 30.4, 122.5, 53.3],
+            "ext": "png",
+        }
+        for page in range(1, 21)
+    ]
+    real_image = {
+        "image_id": "real-1",
+        "page_no": 1,
+        "xref": 200,
+        "width": 1200,
+        "height": 800,
+        "rect": [100.0, 160.0, 420.0, 360.0],
+        "ext": "jpeg",
+    }
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=repeated_logo + [real_image],
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    image_dir = tmp_path / "modules" / "补充文件" / "“商务评分标准”涉及的支撑材料" / "一、履约能力评价" / "经营状况" / "image_items"
+    exported = sorted(path.name for path in image_dir.glob("*.json"))
+
+    assert "部分业主出具的运行报告16份_图1.json" in exported
+    assert all("logo" not in name.lower() for name in exported)
+    assert len(exported) == 1
+
+
+def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 符合招标文件投标人资格要求的证明文件 / 符合招标公告投标人资格要求的证明文件",
+            24,
+            24,
+            "3.6、符合招标文件投标人资格要求的证明文件",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=24, text="3.6.1、符合投标文件投标人资格要求的证明文件", bbox=[0, 80, 100, 90], block_no=1),
+    ]
+    tiny_artifact = {
+        "image_id": "artifact-1",
+        "page_no": 24,
+        "xref": 1145,
+        "width": 129,
+        "height": 25,
+        "rect": [72.36, 122.04, 118.98, 131.22],
+        "ext": "png",
+    }
+    real_image = {
+        "image_id": "real-1",
+        "page_no": 24,
+        "xref": 300,
+        "width": 900,
+        "height": 600,
+        "rect": [90.0, 180.0, 420.0, 500.0],
+        "ext": "jpeg",
+    }
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[tiny_artifact, real_image],
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    image_dir = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "符合招标文件投标人资格要求的证明文件"
+        / "符合招标公告投标人资格要求的证明文件"
+        / "image_items"
+    )
+    exported = sorted(path.name for path in image_dir.glob("*.json"))
+
+    assert exported == ["符合投标文件投标人资格要求的证明文件_图1.json"]
+
+
+def test_package_module_artifacts_creates_review_index_subfolders(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 一、履约能力评价 / 经营状况",
+            574,
+            640,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="b1", page_no=574, text="（1）、绩效评价结果查询", bbox=[0, 100, 100, 110], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=627, text="（1）、企业发展稳健", bbox=[0, 100, 100, 110], block_no=2),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["一、履约能力评价", "经营状况", "", "详见第574页：3.8.1.1、企业履约能力强", ""],
+                ["", "", "", "第627页：3.8.1.2、企业整体经营状况优良", ""],
+            ],
+        ),
+        ParsedTable(table_id="real-table-1", page_no=574, rows=[["名称", "分值"]], bbox=[0, 120, 200, 180]),
+        ParsedTable(table_id="real-table-2", page_no=627, rows=[["指标", "说明"]], bbox=[0, 120, 200, 180]),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 574, "xref": 200, "width": 800, "height": 600, "rect": [10, 200, 210, 340], "ext": "jpeg"},
+        {"image_id": "img-2", "page_no": 627, "xref": 201, "width": 800, "height": 600, "rect": [10, 200, 210, 340], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "“商务评分标准”涉及的支撑材料" / "一、履约能力评价" / "经营状况"
+    sub_1 = base / "3.8.1.1、企业履约能力强"
+    sub_2 = base / "3.8.1.2、企业整体经营状况优良"
+    assert (sub_1 / "table_items" / "绩效评价结果查询_表1.json").exists()
+    assert (sub_1 / "image_items" / "绩效评价结果查询_图1.json").exists()
+    assert (sub_2 / "table_items" / "企业发展稳健_表1.json").exists()
+    assert (sub_2 / "image_items" / "企业发展稳健_图1.json").exists()
+
+
+def test_package_module_artifacts_expands_pages_using_review_index_ranges(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 一、履约能力评价 / 经营状况",
+            574,
+            627,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="b1", page_no=628, text="（2）、具备优秀的团队", bbox=[0, 100, 100, 110], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["一、履约能力评价", "经营状况", "", "详见第574页：3.8.1.1、企业履约能力强", ""],
+                ["", "", "", "第627页：3.8.1.2、企业整体经营状况优良", ""],
+                ["", "售后服务", "", "详见第641页：3.8.2、售后服务", ""],
+            ],
+        ),
+        ParsedTable(table_id="real-table-2", page_no=628, rows=[["指标", "说明"]], bbox=[0, 120, 200, 180]),
+    ]
+    images = [
+        {"image_id": "img-2", "page_no": 628, "xref": 201, "width": 800, "height": 600, "rect": [10, 200, 210, 340], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    sub_2 = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "一、履约能力评价"
+        / "经营状况"
+        / "3.8.1.2、企业整体经营状况优良"
+    )
+    assert (sub_2 / "table_items" / "具备优秀的团队_表1.json").exists()
+    assert (sub_2 / "image_items" / "具备优秀的团队_图1.json").exists()
+
+
+def test_package_module_artifacts_applies_review_index_to_other_score_elements(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 一、履约能力评价 / 售后服务",
+            641,
+            641,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="b1", page_no=641, text="（1）、制定完善的售后服务方案", bbox=[0, 100, 100, 110], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["一、履约能力评价", "经营状况", "", "详见第574页：3.8.1.1、企业履约能力强", ""],
+                ["", "售后服务", "", "详见第641页：3.8.2、售后服务", ""],
+            ],
+        ),
+        ParsedTable(table_id="real-table-1", page_no=641, rows=[["服务", "内容"]], bbox=[0, 120, 200, 180]),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 641, "xref": 201, "width": 800, "height": 600, "rect": [10, 200, 210, 340], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    subfolder = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "一、履约能力评价"
+        / "售后服务"
+        / "3.8.2、售后服务"
+    )
+    assert (subfolder / "table_items" / "制定完善的售后服务方案_表1.json").exists()
+    assert (subfolder / "image_items" / "制定完善的售后服务方案_图1.json").exists()
+
+
+def test_package_module_artifacts_does_not_apply_review_index_outside_score_materials(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业名称变更",
+            574,
+            574,
+            "3.9、投标人自述的企业名称变更原因说明",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="b1", page_no=574, text="3.9.2、2007年企业名称变更证明材料", bbox=[0, 100, 100, 110], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["一、履约能力评价", "经营状况", "", "详见第574页：3.8.1.1、企业履约能力强", ""],
+            ],
+        )
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 574, "xref": 201, "width": 800, "height": 600, "rect": [10, 200, 210, 340], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    section_dir = tmp_path / "modules" / "补充文件" / "企业名称变更"
+    assert (section_dir / "image_items" / "2007年企业名称变更证明材料_图1.json").exists()
+    assert not (section_dir / "3.8.1.1、企业履约能力强").exists()
+
+
+def test_package_module_artifacts_maps_review_index_elements_to_excel_paths(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 研发团队规模",
+            769,
+            770,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="b1", page_no=771, text="3.8.10.2、职称证书37人", bbox=[0, 100, 100, 110], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["一、履约能力评价", "经营状况", "", "详见第574页：3.8.1.1、企业履约能力强", ""],
+                ["", "研发团队规模", "", "详见第769页：3.8.10、研发团队规模", ""],
+                ["", "", "", "第771页：3.8.10.2、职称证书37人", ""],
+            ],
+        ),
+        ParsedTable(table_id="real-table-1", page_no=771, rows=[["姓名", "职称"]], bbox=[0, 120, 200, 180]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        planned_section_paths=[
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 研发团队规模",
+        ],
+    )
+
+    subfolder = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "二、高质量发展评价"
+        / "研发团队规模"
+        / "3.8.10.2、职称证书37人"
+    )
+    assert (subfolder / "table_items" / "职称证书37人_表1.json").exists()
+
+
+def test_package_module_artifacts_uses_heading_y_bounds_for_cross_page_index_items(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 绿色发展规划",
+            706,
+            707,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="h1", page_no=706, text="3.8.4.1、绿色发展顶层规划", bbox=[0, 100, 100, 110], block_no=1),
+        PdfTextBlock(block_id="h2", page_no=707, text="3.8.4.2、绿色发展执行情况", bbox=[0, 200, 100, 210], block_no=2),
+        PdfTextBlock(block_id="before-h2", page_no=707, text="上一小节跨页延续内容", bbox=[0, 120, 100, 130], block_no=3),
+        PdfTextBlock(block_id="after-h2", page_no=707, text="下一小节内容", bbox=[0, 240, 100, 250], block_no=4),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["二、高质量发展评价", "绿色发展规划", "", "详见第706页：3.8.4.1、绿色发展顶层规划", ""],
+                ["", "", "", "第707页：3.8.4.2、绿色发展执行情况", ""],
+            ],
+        ),
+        ParsedTable(table_id="cross-page-table", page_no=707, rows=[["跨页", "内容"]], bbox=[0, 140, 200, 180]),
+        ParsedTable(table_id="next-table", page_no=707, rows=[["执行", "情况"]], bbox=[0, 260, 200, 300]),
+    ]
+    images = [
+        {"image_id": "img-before", "page_no": 707, "xref": 301, "width": 800, "height": 600, "rect": [10, 150, 210, 190], "ext": "jpeg"},
+        {"image_id": "img-after", "page_no": 707, "xref": 302, "width": 800, "height": 600, "rect": [10, 270, 210, 330], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "“商务评分标准”涉及的支撑材料" / "二、高质量发展评价" / "绿色发展规划"
+    sub_1 = base / "3.8.4.1、绿色发展顶层规划"
+    sub_2 = base / "3.8.4.2、绿色发展执行情况"
+    assert (sub_1 / "table_items" / "绿色发展顶层规划_表1.json").exists()
+    assert (sub_1 / "image_items" / "绿色发展顶层规划_图1.json").exists()
+    assert (sub_2 / "table_items" / "绿色发展执行情况_表1.json").exists()
+    assert (sub_2 / "image_items" / "绿色发展执行情况_图1.json").exists()
+
+
+def test_package_module_artifacts_writes_text_items_for_review_index_text_sections(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 创新激励机制、供应链保障措施",
+            803,
+            807,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="h1", page_no=803, text="3.8.13.2、供应链保障措施", bbox=[0, 100, 100, 110], block_no=1),
+        PdfTextBlock(
+            block_id="p1",
+            page_no=803,
+            text="公司建立供应链风险识别机制，\n并制定供应链保障措施。",
+            bbox=[0, 130, 200, 180],
+            block_no=2,
+        ),
+        PdfTextBlock(block_id="h2", page_no=808, text="3.8.14、数智化评价", bbox=[0, 100, 100, 110], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["二、高质量发展评价", "创新激励机制、供应链保障措施", "", "详见第803页：3.8.13.2、供应链保障措施", ""],
+                ["", "数智化评价", "", "详见第808页：3.8.14、数智化评价", ""],
+            ],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    text_dir = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "二、高质量发展评价"
+        / "创新激励机制、供应链保障措施"
+        / "3.8.13.2、供应链保障措施"
+        / "text_items"
+    )
+    json_path = text_dir / "供应链保障措施.json"
+    md_path = text_dir / "供应链保障措施.md"
+
+    assert json_path.exists()
+    assert md_path.exists()
+    assert "供应链风险识别机制" in md_path.read_text(encoding="utf-8")
+
+
+def test_package_module_artifacts_writes_complete_material_package_for_review_index_section(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 创新激励机制、供应链保障措施",
+            3,
+            4,
+            "3.8、招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="h1", page_no=3, text="3.8.13.2、供应链保障措施", bbox=[0, 100, 100, 110], block_no=1),
+        PdfTextBlock(block_id="p1", page_no=3, text="供应链保障正文", bbox=[0, 130, 200, 180], block_no=2),
+        PdfTextBlock(block_id="h2", page_no=5, text="3.8.14、数智化评价", bbox=[0, 100, 100, 110], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["二、高质量发展评价", "创新激励机制、供应链保障措施", "", "详见第3页：3.8.13.2、供应链保障措施", ""],
+                ["", "数智化评价", "", "详见第5页：3.8.14、数智化评价", ""],
+            ],
+        ),
+        ParsedTable(table_id="material-table", page_no=3, rows=[["措施", "说明"]], bbox=[10, 190, 200, 240]),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 3, "xref": 10, "width": 500, "height": 400, "rect": [10, 260, 150, 360], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+        planned_section_paths=[
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 创新激励机制、供应链保障措施",
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 数智化评价",
+        ],
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "二、高质量发展评价"
+        / "创新激励机制、供应链保障措施"
+        / "3.8.13.2、供应链保障措施"
+    )
+    meta = json.loads((material_dir / "material_meta.json").read_text(encoding="utf-8"))
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert meta["source_page_start"] == 3
+    assert meta["source_page_end"] == 5
+    assert meta["source_end_y"] == 100.0
+    assert meta["original_capture"]["available"] is False
+    assert meta["text_item_count"] == 1
+    assert meta["table_item_count"] == 1
+    assert meta["image_item_count"] == 1
+    assert meta["material_path"] == "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 创新激励机制、供应链保障措施 / 3.8.13.2、供应链保障措施"
+    assert meta["rule_section_path"] == "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 创新激励机制、供应链保障措施"
+    assert meta["rule_module_name"] == "补充文件"
+    assert meta["material_types"] == ["text", "table", "image"]
+    assert meta["dominant_material_type"] == "mixed"
+    assert meta["raw_context_title"] == "3.8.13.2、供应链保障措施"
+    assert meta["title_mapping"]["raw_context_title"] == "3.8.13.2、供应链保障措施"
+    assert meta["title_mapping"]["material_title"] == "3.8.13.2、供应链保障措施"
+    assert ordered["material_path"] == meta["material_path"]
+    assert ordered["rule_section_path"] == meta["rule_section_path"]
+    assert ordered["material_types"] == ["text", "table", "image"]
+    assert ordered["dominant_material_type"] == "mixed"
+    assert [item["type"] for item in ordered["items"]] == ["text", "text", "table", "image"]
+    assert ordered["items"][0]["block_id"] == "h1"
+    assert [item["order"] for item in ordered["items"]] == [1, 2, 3, 4]
+    assert ordered["items"][0]["item_type"] == "text"
+    assert ordered["items"][0]["payload_ref"] == "text_items/供应链保障措施.json"
+    assert ordered["items"][0]["nearest_heading"] == "3.8.13.2、供应链保障措施"
+    assert ordered["items"][0]["rule_section_path"] == meta["rule_section_path"]
+    assert ordered["items"][2]["item_type"] == "table"
+    assert ordered["items"][2]["payload_ref"].endswith("json")
+    assert ordered["items"][3]["item_type"] == "image"
+    assert ordered["items"][3]["payload_ref"].endswith("json")
+
+
+def test_package_module_artifacts_packages_compound_financial_reports_by_detected_instances_and_children(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+    candidates = [
+        _candidate(
+            f"{anchor} / 利润表",
+            10,
+            25,
+            "财务状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="i2022", page_no=10, text="2022年度财务报表", bbox=[0, 80, 200, 95], block_no=1, font_size=16),
+        PdfTextBlock(block_id="toc2022", page_no=11, text="目录", bbox=[0, 80, 100, 95], block_no=2, font_size=15),
+        PdfTextBlock(block_id="profit2022", page_no=12, text="利润表", bbox=[0, 80, 100, 95], block_no=3, font_size=15),
+        PdfTextBlock(block_id="note2022", page_no=13, text="财务报表附注", bbox=[0, 80, 120, 95], block_no=4, font_size=15),
+        PdfTextBlock(block_id="i2023", page_no=20, text="2023年度财务报表", bbox=[0, 80, 200, 95], block_no=5, font_size=16),
+        PdfTextBlock(block_id="toc2023", page_no=21, text="目录", bbox=[0, 80, 100, 95], block_no=6, font_size=15),
+        PdfTextBlock(block_id="profit2023", page_no=22, text="利润表", bbox=[0, 80, 100, 95], block_no=7, font_size=15),
+    ]
+    images = [
+        {"image_id": "toc-img", "page_no": 11, "xref": 101, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+        {"image_id": "profit-img", "page_no": 12, "xref": 102, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+        {"image_id": "note-img", "page_no": 13, "xref": 103, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+        {"image_id": "profit-2023-img", "page_no": 22, "xref": 104, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*财务报表"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    instance_meta = json.loads((base / "2022年度财务报表" / "compound_instance_meta.json").read_text(encoding="utf-8"))
+    assert (base / "2022年度财务报表" / "目录" / "image_items" / "目录_图1.json").exists()
+    assert (base / "2022年度财务报表" / "利润表" / "image_items" / "利润表_图1.json").exists()
+    assert (base / "2022年度财务报表" / "财务报表附注" / "image_items" / "财务报表附注_图1.json").exists()
+    assert (base / "2023年度财务报表" / "利润表" / "image_items" / "利润表_图1.json").exists()
+    assert not (base / "利润表" / "image_items" / "目录_图1.json").exists()
+    assert instance_meta["instance_path"] == "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表 / 2022年度财务报表"
+    assert instance_meta["rule_anchor_path"] == anchor
+    assert instance_meta["children"][0]["material_path"].endswith("/ 目录")
+    assert instance_meta["children"][0]["material_types"] == ["text", "image"]
+    assert instance_meta["children"][0]["dominant_material_type"] == "mixed"
