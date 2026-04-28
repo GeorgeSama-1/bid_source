@@ -25,7 +25,16 @@ def _serialize(data: Any) -> Any:
         return data.model_dump()
     if isinstance(data, Path):
         return str(data)
+    if hasattr(data, "tolist") and callable(getattr(data, "tolist")):
+        return _serialize(data.tolist())
+    if hasattr(data, "item") and callable(getattr(data, "item")):
+        try:
+            return _serialize(data.item())
+        except (TypeError, ValueError):
+            pass
     if isinstance(data, list):
+        return [_serialize(item) for item in data]
+    if isinstance(data, tuple):
         return [_serialize(item) for item in data]
     if isinstance(data, dict):
         return {key: _serialize(value) for key, value in data.items()}
