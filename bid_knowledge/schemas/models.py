@@ -118,8 +118,8 @@ class TitleMapping(ModelBase):
 
 
 class MaterialItemRef(ModelBase):
-    type: Literal["text", "table", "image"]
-    item_type: Literal["text", "table", "image"]
+    type: Literal["text", "table", "image", "submaterial"]
+    item_type: Literal["text", "table", "image", "submaterial"]
     item_id: str = ""
     page_no: int | None = None
     top_y: float = 0.0

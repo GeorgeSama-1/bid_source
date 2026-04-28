@@ -818,3 +818,78 @@ def test_package_module_artifacts_packages_compound_financial_reports_by_detecte
     assert instance_meta["children"][0]["material_path"].endswith("/ 目录")
     assert instance_meta["children"][0]["material_types"] == ["text", "image"]
     assert instance_meta["children"][0]["dominant_material_type"] == "mixed"
+
+
+def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
+            1,
+            2,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="授权正文第一页", bbox=[0, 60, 300, 80], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 120, 300, 140], block_no=3),
+        PdfTextBlock(block_id="b4", page_no=1, text="身份证说明文字", bbox=[0, 160, 300, 180], block_no=4),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 1, "xref": 20, "width": 600, "height": 500, "rect": [10, 200, 150, 360], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    section_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书"
+    submaterial_dir = section_dir / "submaterials" / "法定代表人（单位负责人）身份证（扫描件）"
+    assert (section_dir / "ordered_material.json").exists()
+    assert (submaterial_dir / "ordered_material.json").exists()
+    assert (submaterial_dir / "material_meta.json").exists()
+
+    parent_ordered = json.loads((section_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    child_ordered = json.loads((submaterial_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert any(item["item_type"] == "submaterial" for item in parent_ordered["items"])
+    assert any(item["payload_ref"].endswith("submaterials/法定代表人（单位负责人）身份证（扫描件）/ordered_material.json") for item in parent_ordered["items"] if item["item_type"] == "submaterial")
+    assert child_ordered["material_title"] == "法定代表人（单位负责人）身份证（扫描件）"
+    assert child_ordered["items"][0]["nearest_heading"] == "附：法定代表人（单位负责人）身份证（扫描件）"
+    assert [item["item_type"] for item in child_ordered["items"]] == ["text", "text", "image"]
+
+
+def test_package_module_artifacts_suffixes_duplicate_fu_submaterials(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
+            1,
+            2,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="附：营业执照副本", bbox=[0, 80, 300, 100], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="第一页附件说明", bbox=[0, 120, 300, 140], block_no=3),
+        PdfTextBlock(block_id="b4", page_no=2, text="附：营业执照副本", bbox=[0, 80, 300, 100], block_no=4),
+        PdfTextBlock(block_id="b5", page_no=2, text="第二页附件说明", bbox=[0, 120, 300, 140], block_no=5),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    submaterials_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书" / "submaterials"
+    names = sorted(path.name for path in submaterials_dir.iterdir() if path.is_dir())
+    assert "营业执照副本" in names
+    assert any(name.startswith("营业执照副本_") for name in names)

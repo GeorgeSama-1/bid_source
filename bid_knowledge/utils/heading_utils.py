@@ -13,12 +13,19 @@ HEADING_PATTERNS = [
     re.compile(r"^附[:：]\s*"),
 ]
 
+ATTACHMENT_HEADING_PATTERN = re.compile(r"^附[:：]\s*")
+
 
 def is_heading_text(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped:
         return False
     return any(pattern.match(stripped) for pattern in HEADING_PATTERNS)
+
+
+def is_attachment_heading(text: str) -> bool:
+    stripped = (text or "").strip()
+    return bool(ATTACHMENT_HEADING_PATTERN.match(stripped))
 
 
 def strip_heading_marker(text: str) -> str:
@@ -51,6 +58,11 @@ def heading_level(text: str) -> int:
 
 def sanitize_display_title(text: str) -> str:
     return re.sub(r"\s+", " ", strip_heading_marker(text)).strip()
+
+
+def attachment_heading_title(text: str) -> str:
+    stripped = (text or "").strip()
+    return ATTACHMENT_HEADING_PATTERN.sub("", stripped, count=1).strip() or sanitize_display_title(text)
 
 
 def build_heading_candidates(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

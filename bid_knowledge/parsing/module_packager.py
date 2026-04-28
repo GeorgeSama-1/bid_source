@@ -17,7 +17,13 @@ from bid_knowledge.schemas.models import (
     ReusableCandidate,
     TitleMapping,
 )
-from bid_knowledge.utils.heading_utils import build_heading_candidates, find_nearest_heading, sanitize_display_title
+from bid_knowledge.utils.heading_utils import (
+    attachment_heading_title,
+    build_heading_candidates,
+    find_nearest_heading,
+    is_attachment_heading,
+    sanitize_display_title,
+)
 from bid_knowledge.utils.id_utils import make_stable_id
 from bid_knowledge.utils.io_utils import ensure_dir, write_json
 
@@ -180,6 +186,7 @@ def _ordered_material_items(
     text_item: dict[str, Any] | None,
     table_items: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
+    submaterial_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     for block in text_blocks:
@@ -236,6 +243,20 @@ def _ordered_material_items(
                 payload_ref=str(Path(image["json_path"]).relative_to(material_dir)) if image.get("json_path") else None,
             ).model_dump(exclude_none=True)
         )
+    for submaterial in submaterial_items or []:
+        ordered.append(
+            MaterialItemRef(
+                type="submaterial",
+                item_type="submaterial",
+                item_id=str(submaterial.get("item_id") or ""),
+                page_no=submaterial.get("page_no"),
+                top_y=submaterial.get("top_y", 0.0),
+                nearest_heading=submaterial.get("nearest_heading", ""),
+                rule_section_path=submaterial.get("rule_section_path", rule_section_path),
+                material_path=submaterial.get("material_path", material_path),
+                payload_ref=submaterial.get("payload_ref"),
+            ).model_dump(exclude_none=True)
+        )
     sorted_items = sorted(ordered, key=lambda item: (int(item.get("page_no") or 0), float(item.get("top_y") or 0.0), item["type"]))
     for index, item in enumerate(sorted_items, start=1):
         item["order"] = index
@@ -276,6 +297,8 @@ def _write_material_package(
     text_item: dict[str, Any] | None,
     table_items: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
+    image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None = None,
+    allow_submaterials: bool = True,
 ) -> dict[str, Any]:
     page_start = int(subfolder["page_start"])
     page_end = int(subfolder["page_end"])
@@ -284,6 +307,21 @@ def _write_material_package(
     material_types = _material_types(text_item=text_item, table_items=table_items, image_items=image_items)
     dominant_material_type = _dominant_material_type(material_types)
     raw_context_title = text_blocks[0].text if text_blocks else subfolder["folder_title"]
+    submaterial_items = (
+        _write_attachment_submaterials(
+            material_dir=material_dir,
+            section_path=section_path,
+            path_parts=path_parts + [subfolder["folder_title"]],
+            pdf_path=pdf_path,
+            doc=doc,
+            text_blocks=text_blocks,
+            table_items=table_items,
+            image_items=image_items,
+            image_bytes_resolver=image_bytes_resolver,
+        )
+        if allow_submaterials
+        else []
+    )
     ordered = OrderedMaterialPackage(
         material_title=subfolder["folder_title"],
         section_path=section_path,
@@ -302,6 +340,7 @@ def _write_material_package(
                 text_item=text_item,
                 table_items=table_items,
                 image_items=image_items,
+                submaterial_items=submaterial_items,
             )
         ],
     )
@@ -338,6 +377,218 @@ def _write_material_package(
     )
     write_json(material_dir / "material_meta.json", meta)
     return meta.model_dump()
+
+
+def _attachment_anchor_blocks(text_blocks: list[PdfTextBlock]) -> list[PdfTextBlock]:
+    return [
+        block
+        for block in sorted(text_blocks, key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no))
+        if is_attachment_heading(block.text)
+    ]
+
+
+def _unique_submaterial_dir(base_dir: Path, title: str) -> tuple[Path, str]:
+    base_name = _safe_dirname(title)
+    candidate = base_dir / base_name
+    if not candidate.exists():
+        return candidate, base_name
+    suffix = 2
+    while True:
+        name = f"{base_name}_{suffix}"
+        candidate = base_dir / name
+        if not candidate.exists():
+            return candidate, name
+        suffix += 1
+
+
+def _copy_table_item_for_submaterial(
+    table: dict[str, Any],
+    child_dir: Path,
+    child_title: str,
+    section_path: str,
+    folder_parts: list[str],
+    pdf_path: str | Path | None,
+    table_index: int,
+) -> dict[str, Any]:
+    table_title = _sanitize_item_title(child_title, f"表{table_index}")
+    item_dir = ensure_dir(child_dir / "table_items")
+    json_path = item_dir / _item_filename(table_title, "json")
+    item = {
+        **{key: value for key, value in table.items() if not str(key).startswith("_")},
+        "section_path": section_path,
+        "folder_parts": folder_parts,
+        "table_title": table_title,
+        "context_title": child_title,
+        "parent_section_title": table.get("parent_section_title") or child_title,
+        "source_file": str(pdf_path or ""),
+        "review_status": "pending",
+        "json_path": str(json_path),
+        "_top_y": float(table.get("_top_y") or 0.0),
+    }
+    write_json(json_path, item)
+    return item
+
+
+def _copy_image_item_for_submaterial(
+    image: dict[str, Any],
+    child_dir: Path,
+    child_title: str,
+    section_path: str,
+    folder_parts: list[str],
+    pdf_path: str | Path | None,
+    image_index: int,
+    image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
+    doc: Any,
+) -> dict[str, Any]:
+    image_title = _sanitize_item_title(child_title, f"图{image_index}")
+    item_dir = ensure_dir(child_dir / "image_items")
+    image_bytes, ext = _resolve_image_bytes(image, image_bytes_resolver, doc)
+    image_path = item_dir / _item_filename(image_title, ext)
+    if image_bytes is not None:
+        image_path.write_bytes(image_bytes)
+    json_path = item_dir / _item_filename(image_title, "json")
+    item = {
+        **{key: value for key, value in image.items() if not str(key).startswith("_")},
+        "section_path": section_path,
+        "folder_parts": folder_parts,
+        "image_title": image_title,
+        "context_title": child_title,
+        "parent_section_title": image.get("parent_section_title") or child_title,
+        "source_file": str(pdf_path or ""),
+        "review_status": "pending",
+        "file_path": str(image_path),
+        "json_path": str(json_path),
+        "_top_y": float(image.get("_top_y") or 0.0),
+    }
+    write_json(json_path, item)
+    return item
+
+
+def _write_attachment_submaterials(
+    material_dir: Path,
+    section_path: str,
+    path_parts: list[str],
+    pdf_path: str | Path | None,
+    doc: Any,
+    text_blocks: list[PdfTextBlock],
+    table_items: list[dict[str, Any]],
+    image_items: list[dict[str, Any]],
+    image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None = None,
+) -> list[dict[str, Any]]:
+    anchors = _attachment_anchor_blocks(text_blocks)
+    if not anchors:
+        return []
+
+    submaterials_dir = ensure_dir(material_dir / "submaterials")
+    references: list[dict[str, Any]] = []
+    for index, anchor in enumerate(anchors):
+        next_anchor = anchors[index + 1] if index + 1 < len(anchors) else None
+        start_page = anchor.page_no
+        start_y = _block_top_y(anchor)
+        end_page = next_anchor.page_no if next_anchor else max([block.page_no for block in text_blocks], default=start_page)
+        end_y = _block_top_y(next_anchor) if next_anchor else None
+        child_title = attachment_heading_title(anchor.text)
+        child_dir, _child_dir_name = _unique_submaterial_dir(submaterials_dir, child_title)
+        child_dir = ensure_dir(child_dir)
+
+        child_blocks = [
+            block
+            for block in text_blocks
+            if _item_in_range(block.page_no, _block_top_y(block), start_page, start_y, end_page, end_y)
+        ]
+        child_tables = [
+            table
+            for table in table_items
+            if _item_in_range(
+                int(table.get("page_no") or 0),
+                float(table.get("_top_y") or 0.0),
+                start_page,
+                start_y,
+                end_page,
+                end_y,
+            )
+        ]
+        child_images = [
+            image
+            for image in image_items
+            if _item_in_range(
+                int(image.get("page_no") or 0),
+                float(image.get("_top_y") or 0.0),
+                start_page,
+                start_y,
+                end_page,
+                end_y,
+            )
+        ]
+
+        child_text_item = _write_text_item(
+            item_dir=ensure_dir(child_dir / "text_items"),
+            folder_title=child_title,
+            text_blocks=child_blocks,
+            section_path=section_path,
+            path_parts=path_parts + [child_title],
+            pdf_path=pdf_path,
+        )
+        copied_tables = [
+            _copy_table_item_for_submaterial(
+                table=table,
+                child_dir=child_dir,
+                child_title=child_title,
+                section_path=section_path,
+                folder_parts=path_parts + [child_title],
+                pdf_path=pdf_path,
+                table_index=table_index,
+            )
+            for table_index, table in enumerate(child_tables, start=1)
+        ]
+        copied_images = [
+            _copy_image_item_for_submaterial(
+                image=image,
+                child_dir=child_dir,
+                child_title=child_title,
+                section_path=section_path,
+                folder_parts=path_parts + [child_title],
+                pdf_path=pdf_path,
+                image_index=image_index,
+                image_bytes_resolver=image_bytes_resolver,
+                doc=doc,
+            )
+            for image_index, image in enumerate(child_images, start=1)
+        ]
+        _write_material_package(
+            material_dir=child_dir,
+            subfolder={
+                "folder_title": child_title,
+                "page_start": start_page,
+                "page_end": end_page,
+                "start_y": start_y,
+                "end_y": end_y,
+                "start_block_id": anchor.block_id,
+                "end_block_id": next_anchor.block_id if next_anchor else None,
+            },
+            section_path=section_path,
+            path_parts=path_parts,
+            pdf_path=pdf_path,
+            doc=doc,
+            text_blocks=child_blocks,
+            text_item=child_text_item,
+            table_items=copied_tables,
+            image_items=copied_images,
+            image_bytes_resolver=image_bytes_resolver,
+            allow_submaterials=False,
+        )
+        references.append(
+            {
+                "item_id": make_stable_id("submaterial", f"{section_path}:{anchor.block_id}:{child_title}"),
+                "page_no": anchor.page_no,
+                "top_y": start_y or 0.0,
+                "nearest_heading": anchor.text,
+                "rule_section_path": section_path,
+                "material_path": _material_path(path_parts + [child_title]),
+                "payload_ref": str((child_dir / "ordered_material.json").relative_to(material_dir)),
+            }
+        )
+    return references
 
 
 def _safe_dirname(raw: str) -> str:
@@ -624,6 +875,8 @@ def _package_compound_materials(
                         text_item=text_item,
                         table_items=table_items,
                         image_items=image_items,
+                        image_bytes_resolver=image_bytes_resolver,
+                        allow_submaterials=False,
                     )
                 )
 
@@ -1067,6 +1320,43 @@ def package_module_artifacts(
                         text_item=text_items_by_folder.get(folder_title),
                         table_items=table_items_by_folder.get(folder_title, []),
                         image_items=image_items_by_folder.get(folder_title, []),
+                        image_bytes_resolver=image_bytes_resolver,
+                    )
+                )
+
+            if not section_subfolders and section_candidates:
+                root_folder_title = path_parts[-1] if path_parts else section_path
+                root_text_item = _write_text_item(
+                    item_dir=text_items_dir,
+                    folder_title=root_folder_title,
+                    text_blocks=module_blocks,
+                    section_path=section_path,
+                    path_parts=path_parts,
+                    pdf_path=pdf_path,
+                )
+                root_table_items = [{**item, "_top_y": float((item.get("bbox") or [0, 0, 0, 0])[1]) if item.get("bbox") else 0.0} for item in tables_index]
+                root_image_items = [{**item, "_top_y": float((item.get("rect") or [0, 0, 0, 0])[1]) if item.get("rect") else 0.0} for item in images_index]
+                material_index.append(
+                    _write_material_package(
+                        material_dir=section_dir,
+                        subfolder={
+                            "folder_title": root_folder_title,
+                            "page_start": pages[0] if pages else 0,
+                            "page_end": pages[-1] if pages else 0,
+                            "start_y": _block_top_y(module_blocks[0]) if module_blocks else None,
+                            "end_y": _block_top_y(module_blocks[-1]) if module_blocks else None,
+                            "start_block_id": module_blocks[0].block_id if module_blocks else None,
+                            "end_block_id": module_blocks[-1].block_id if module_blocks else None,
+                        },
+                        section_path=section_path,
+                        path_parts=path_parts[:-1],
+                        pdf_path=pdf_path,
+                        doc=doc,
+                        text_blocks=module_blocks,
+                        text_item=root_text_item,
+                        table_items=root_table_items,
+                        image_items=root_image_items,
+                        image_bytes_resolver=image_bytes_resolver,
                     )
                 )
 

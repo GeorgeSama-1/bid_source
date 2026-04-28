@@ -74,3 +74,22 @@ def test_material_models_capture_raw_and_archive_layers() -> None:
     assert ordered.items[0].payload_ref == "text_items/供应链保障措施.json"
     assert meta.title_mapping.raw_context_title == "3.8.13.2、供应链保障措施"
     assert compound.children[0].material_types == ["text", "table", "image"]
+
+
+def test_material_item_ref_supports_submaterial_type() -> None:
+    item = MaterialItemRef(
+        type="submaterial",
+        item_type="submaterial",
+        item_id="submaterial-1",
+        page_no=3,
+        top_y=120.0,
+        payload_ref="submaterials/履约证明材料/ordered_material.json",
+        nearest_heading="附：履约证明材料",
+        rule_section_path="商务文件 / 补充文件 / 履约能力证明",
+        material_path="商务文件 / 补充文件 / 履约能力证明 / 履约证明材料",
+        order=3,
+    )
+
+    assert item.type == "submaterial"
+    assert item.item_type == "submaterial"
+    assert item.payload_ref == "submaterials/履约证明材料/ordered_material.json"
