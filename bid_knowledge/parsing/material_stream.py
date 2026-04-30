@@ -11,6 +11,26 @@ def _top_from_bbox(bbox: list[float] | None) -> float:
     return float(bbox[1])
 
 
+def _ocr_texts(pp_result: dict[str, Any]) -> list[str]:
+    ocr = pp_result.get("overall_ocr_res") or {}
+    if not isinstance(ocr, dict):
+        return []
+    return [str(text) for text in (ocr.get("rec_texts") or []) if str(text).strip()]
+
+
+def _ocr_scores(pp_result: dict[str, Any]) -> list[float]:
+    ocr = pp_result.get("overall_ocr_res") or {}
+    if not isinstance(ocr, dict):
+        return []
+    scores: list[float] = []
+    for score in ocr.get("rec_scores") or []:
+        try:
+            scores.append(float(score))
+        except (TypeError, ValueError):
+            continue
+    return scores
+
+
 def build_page_material_stream(
     *,
     blocks: list[PdfTextBlock],
@@ -78,6 +98,9 @@ def build_page_material_stream(
 
 def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no: int) -> list[PageMaterialItem]:
     items: list[PageMaterialItem] = []
+    ocr_texts = _ocr_texts(pp_result)
+    ocr_scores = _ocr_scores(pp_result)
+    ocr_text = "\n".join(ocr_texts)
 
     for index, block in enumerate(pp_result.get("parsing_res_list") or [], start=1):
         label = str(block.get("block_label") or "")
@@ -94,31 +117,79 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                 top_y=_top_from_bbox(bbox),
                 bbox=bbox,
                 text=str(block.get("block_content") or ""),
-                payload={"layout_label": label},
+                payload={
+                    "layout_label": label,
+                    "block_id": block.get("block_id"),
+                },
             )
         )
 
     image_index = 0
+    table_index = 0
+    fallback_text_index = 0
+    has_parsed_text = any(item.item_type == "text" for item in items)
     for box in (pp_result.get("layout_det_res") or {}).get("boxes") or []:
-        if str(box.get("label") or "") != "image":
-            continue
-        image_index += 1
-        bbox = [float(value) for value in (box.get("coordinate") or [])]
-        items.append(
-            PageMaterialItem(
-                item_id=f"pp-image-{page_no}-{image_index}",
-                item_type="image",
-                source_type="pp_structure_image_region",
-                page_no=page_no,
-                top_y=_top_from_bbox(bbox),
-                bbox=bbox,
-                text="",
-                payload={
-                    "layout_label": "image",
-                    "score": box.get("score"),
-                },
+        label = str(box.get("label") or "")
+        if label == "image":
+            image_index += 1
+            bbox = [float(value) for value in (box.get("coordinate") or [])]
+            items.append(
+                PageMaterialItem(
+                    item_id=f"pp-image-{page_no}-{image_index}",
+                    item_type="image",
+                    source_type="pp_structure_image_region",
+                    page_no=page_no,
+                    top_y=_top_from_bbox(bbox),
+                    bbox=bbox,
+                    text="",
+                    payload={
+                        "layout_label": "image",
+                        "score": box.get("score"),
+                    },
+                )
             )
-        )
+            continue
+
+        if label == "table":
+            table_index += 1
+            bbox = [float(value) for value in (box.get("coordinate") or [])]
+            items.append(
+                PageMaterialItem(
+                    item_id=f"pp-table-{page_no}-{table_index}",
+                    item_type="table",
+                    source_type="pp_structure_table_region",
+                    page_no=page_no,
+                    top_y=_top_from_bbox(bbox),
+                    bbox=bbox,
+                    text="",
+                    payload={
+                        "layout_label": "table",
+                        "score": box.get("score"),
+                    },
+                )
+            )
+            continue
+
+        if not has_parsed_text and label in {"doc_title", "paragraph_title", "text"}:
+            fallback_text_index += 1
+            bbox = [float(value) for value in (box.get("coordinate") or [])]
+            items.append(
+                PageMaterialItem(
+                    item_id=f"pp-text-region-{page_no}-{fallback_text_index}",
+                    item_type="text",
+                    source_type="pp_structure_text_region",
+                    page_no=page_no,
+                    top_y=_top_from_bbox(bbox),
+                    bbox=bbox,
+                    text=ocr_text,
+                    payload={
+                        "layout_label": label,
+                        "score": box.get("score"),
+                        "ocr_texts": ocr_texts,
+                        "ocr_scores": ocr_scores,
+                    },
+                )
+            )
 
     items = sorted(items, key=lambda item: (item.page_no, item.top_y, item.item_type))
     for index, item in enumerate(items, start=1):
