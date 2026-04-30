@@ -12,6 +12,7 @@ from bid_knowledge.schemas.models import (
     MaterialItemRef,
     MaterialMeta,
     OrderedMaterialPackage,
+    PageMaterialItem,
     ParsedTable,
     PdfTextBlock,
     ReusableCandidate,
@@ -187,6 +188,7 @@ def _ordered_material_items(
     table_items: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
     submaterial_items: list[dict[str, Any]] | None = None,
+    page_material_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     for block in text_blocks:
@@ -257,6 +259,29 @@ def _ordered_material_items(
                 payload_ref=submaterial.get("payload_ref"),
             ).model_dump(exclude_none=True)
         )
+    for stream_item in page_material_items or []:
+        item_type = str(stream_item.get("item_type") or stream_item.get("type") or "")
+        if item_type not in {"text", "table", "image"}:
+            continue
+        bbox = stream_item.get("bbox") or []
+        top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
+        ordered.append(
+            MaterialItemRef(
+                type=item_type,
+                item_type=item_type,
+                item_id=str(stream_item.get("item_id") or ""),
+                page_no=stream_item.get("page_no"),
+                top_y=top_y,
+                bbox=bbox if item_type != "image" else None,
+                rect=bbox if item_type == "image" else None,
+                text=stream_item.get("text") if item_type == "text" else None,
+                nearest_heading=nearest_heading,
+                rule_section_path=rule_section_path,
+                material_path=material_path,
+                source_type=stream_item.get("source_type"),
+                payload=stream_item.get("payload") or {},
+            ).model_dump(exclude_none=True)
+        )
     sorted_items = sorted(ordered, key=lambda item: (int(item.get("page_no") or 0), float(item.get("top_y") or 0.0), item["type"]))
     for index, item in enumerate(sorted_items, start=1):
         item["order"] = index
@@ -275,6 +300,15 @@ def _material_types(*, text_item: dict[str, Any] | None, table_items: list[dict[
         kinds.append("table")
     if image_items:
         kinds.append("image")
+    return kinds
+
+
+def _merge_material_types(base_types: list[str], page_material_items: list[dict[str, Any]] | None) -> list[str]:
+    kinds = list(base_types)
+    for item in page_material_items or []:
+        item_type = str(item.get("item_type") or "")
+        if item_type in {"text", "table", "image"} and item_type not in kinds:
+            kinds.append(item_type)
     return kinds
 
 
@@ -297,6 +331,7 @@ def _write_material_package(
     text_item: dict[str, Any] | None,
     table_items: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
+    page_material_items: list[dict[str, Any]] | None = None,
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None = None,
     allow_submaterials: bool = True,
 ) -> dict[str, Any]:
@@ -304,7 +339,10 @@ def _write_material_package(
     page_end = int(subfolder["page_end"])
     original_status = _write_original_capture(material_dir / "original", doc, page_start, page_end)
     material_path = _material_path(path_parts + [subfolder["folder_title"]])
-    material_types = _material_types(text_item=text_item, table_items=table_items, image_items=image_items)
+    material_types = _merge_material_types(
+        _material_types(text_item=text_item, table_items=table_items, image_items=image_items),
+        page_material_items,
+    )
     dominant_material_type = _dominant_material_type(material_types)
     raw_context_title = text_blocks[0].text if text_blocks else subfolder["folder_title"]
     submaterial_items = (
@@ -317,6 +355,7 @@ def _write_material_package(
             text_blocks=text_blocks,
             table_items=table_items,
             image_items=image_items,
+            page_material_items=page_material_items or [],
             image_bytes_resolver=image_bytes_resolver,
         )
         if allow_submaterials
@@ -341,6 +380,7 @@ def _write_material_package(
                 table_items=table_items,
                 image_items=image_items,
                 submaterial_items=submaterial_items,
+                page_material_items=page_material_items or [],
             )
         ],
     )
@@ -473,6 +513,7 @@ def _write_attachment_submaterials(
     text_blocks: list[PdfTextBlock],
     table_items: list[dict[str, Any]],
     image_items: list[dict[str, Any]],
+    page_material_items: list[dict[str, Any]] | None = None,
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None = None,
 ) -> list[dict[str, Any]]:
     anchors = _attachment_anchor_blocks(text_blocks)
@@ -514,6 +555,18 @@ def _write_attachment_submaterials(
             if _item_in_range(
                 int(image.get("page_no") or 0),
                 float(image.get("_top_y") or 0.0),
+                start_page,
+                start_y,
+                end_page,
+                end_y,
+            )
+        ]
+        child_page_material_items = [
+            item
+            for item in page_material_items or []
+            if _item_in_range(
+                int(item.get("page_no") or 0),
+                float(item.get("top_y") or 0.0),
                 start_page,
                 start_y,
                 end_page,
@@ -574,6 +627,7 @@ def _write_attachment_submaterials(
             text_item=child_text_item,
             table_items=copied_tables,
             image_items=copied_images,
+            page_material_items=child_page_material_items,
             image_bytes_resolver=image_bytes_resolver,
             allow_submaterials=False,
         )
@@ -967,6 +1021,50 @@ def _is_tiny_artifact_image(image: dict[str, Any]) -> bool:
     return tiny_intrinsic and (tiny_on_page or very_small_area)
 
 
+def _page_material_item_dict(item: PageMaterialItem | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(item, PageMaterialItem):
+        return item.model_dump()
+    return dict(item)
+
+
+def _page_material_items_for_pages(
+    items: list[PageMaterialItem | dict[str, Any]],
+    pages: list[int],
+) -> list[dict[str, Any]]:
+    page_set = set(pages)
+    scoped = [_page_material_item_dict(item) for item in items if int(_page_material_item_dict(item).get("page_no") or 0) in page_set]
+    return sorted(
+        scoped,
+        key=lambda item: (
+            int(item.get("page_no") or 0),
+            float(item.get("top_y") or 0.0),
+            int(item.get("reading_order") or 0),
+            str(item.get("item_type") or ""),
+        ),
+    )
+
+
+def _page_material_items_in_range(
+    items: list[dict[str, Any]],
+    start_page: int,
+    start_y: float | None,
+    end_page: int,
+    end_y: float | None,
+) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in items
+        if _item_in_range(
+            int(item.get("page_no") or 0),
+            float(item.get("top_y") or 0.0),
+            start_page,
+            start_y,
+            end_page,
+            end_y,
+        )
+    ]
+
+
 def _resolve_image_bytes(
     image: dict[str, Any],
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
@@ -1104,6 +1202,7 @@ def package_module_artifacts(
     top_level_modules: list[str] | None = None,
     planned_section_paths: list[str] | None = None,
     compound_material_rules: list[dict[str, Any]] | None = None,
+    page_material_items: list[PageMaterialItem | dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         import fitz
@@ -1179,6 +1278,7 @@ def package_module_artifacts(
                 ],
                 key=_image_sort_key,
             )
+            module_page_material_items = _page_material_items_for_pages(page_material_items or [], pages)
             heading_candidates = build_heading_candidates([_block_dict(block) for block in module_blocks])
             path_parts = _section_parts(section_path)
 
@@ -1320,6 +1420,13 @@ def package_module_artifacts(
                         text_item=text_items_by_folder.get(folder_title),
                         table_items=table_items_by_folder.get(folder_title, []),
                         image_items=image_items_by_folder.get(folder_title, []),
+                        page_material_items=_page_material_items_in_range(
+                            module_page_material_items,
+                            int(subfolder["page_start"]),
+                            subfolder.get("start_y"),
+                            int(subfolder["page_end"]),
+                            subfolder.get("end_y"),
+                        ),
                         image_bytes_resolver=image_bytes_resolver,
                     )
                 )
@@ -1356,6 +1463,7 @@ def package_module_artifacts(
                         text_item=root_text_item,
                         table_items=root_table_items,
                         image_items=root_image_items,
+                        page_material_items=module_page_material_items,
                         image_bytes_resolver=image_bytes_resolver,
                     )
                 )

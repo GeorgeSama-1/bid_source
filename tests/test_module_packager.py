@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from bid_knowledge.parsing.module_packager import package_module_artifacts
-from bid_knowledge.schemas.models import ParsedTable, PdfTextBlock, ReusableCandidate
+from bid_knowledge.schemas.models import PageMaterialItem, ParsedTable, PdfTextBlock, ReusableCandidate
 
 
 def _candidate(
@@ -893,3 +893,67 @@ def test_package_module_artifacts_suffixes_duplicate_fu_submaterials(tmp_path: P
     names = sorted(path.name for path in submaterials_dir.iterdir() if path.is_dir())
     assert "营业执照副本" in names
     assert any(name.startswith("营业执照副本_") for name in names)
+
+
+def test_package_module_artifacts_preserves_cross_page_material_stream_order(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
+            10,
+            12,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=10, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-text-10",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=10,
+            top_y=80,
+            bbox=[0, 80, 300, 120],
+            text="第一页授权正文",
+            payload={"ocr_texts": ["第一页授权正文"]},
+        ),
+        PageMaterialItem(
+            item_id="pp-image-11",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=11,
+            top_y=100,
+            bbox=[10, 100, 500, 500],
+            text="",
+            payload={"layout_label": "image"},
+        ),
+        PageMaterialItem(
+            item_id="pp-table-12",
+            item_type="table",
+            source_type="pp_structure_table_region",
+            page_no=12,
+            top_y=90,
+            bbox=[20, 90, 520, 360],
+            text="",
+            payload={"layout_label": "table"},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    ordered_path = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书" / "ordered_material.json"
+    ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
+    stream_items = [item for item in ordered["items"] if str(item.get("source_type", "")).startswith("pp_structure")]
+
+    assert [item["item_id"] for item in stream_items] == ["pp-text-10", "pp-image-11", "pp-table-12"]
+    assert [item["item_type"] for item in stream_items] == ["text", "image", "table"]
+    assert stream_items[0]["text"] == "第一页授权正文"
+    assert stream_items[0]["payload"]["ocr_texts"] == ["第一页授权正文"]

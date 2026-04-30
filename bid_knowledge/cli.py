@@ -555,6 +555,7 @@ def pipeline_command(
         top_level_modules=_top_level_modules_from_plan(plan),
         planned_section_paths=_history_section_paths_from_plan(plan),
         compound_material_rules=manual.compound_material_rules or None,
+        page_material_items=page_material_stream,
     )
     _pipeline_echo(12, total_steps, "Building retrieval chunks")
     build_chunks(candidates, out_path=retrieval_dir / "chunks.jsonl")
