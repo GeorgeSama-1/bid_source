@@ -21,6 +21,8 @@ def ensure_dir(path: str | Path) -> Path:
 
 
 def _serialize(data: Any) -> Any:
+    if data is None or isinstance(data, (str, int, float, bool)):
+        return data
     if isinstance(data, BaseModel):
         return data.model_dump()
     if isinstance(data, Path):
@@ -38,7 +40,7 @@ def _serialize(data: Any) -> Any:
         return [_serialize(item) for item in data]
     if isinstance(data, dict):
         return {key: _serialize(value) for key, value in data.items()}
-    return data
+    return str(data)
 
 
 def write_json(path: str | Path, data: Any) -> Path:

@@ -31,3 +31,15 @@ def test_write_json_serializes_array_like_values(tmp_path: Path) -> None:
     )
 
     assert read_json(path) == {"numbers": [1, 2, 3], "nested": {"score": 0.98}}
+
+
+def test_write_json_stringifies_unknown_objects(tmp_path: Path) -> None:
+    class Font:
+        def __str__(self):
+            return "demo-font"
+
+    path = tmp_path / "font.json"
+
+    write_json(path, {"font": Font()})
+
+    assert read_json(path) == {"font": "demo-font"}
