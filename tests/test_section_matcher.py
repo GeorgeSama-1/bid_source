@@ -403,3 +403,62 @@ def test_match_sections_prefers_authorization_title_over_business_license_role_t
     assert results[0].matched is True
     assert results[0].matched_page_no == 834
     assert results[0].matched_title == "法定代表人授权委托书"
+
+
+def test_match_sections_scopes_authorization_child_to_parent_section() -> None:
+    rule = make_rule(
+        rule_id="rule-auth-child",
+        module_name="法定代表人授权委托书",
+        sub_content_1="被授权人身份证等有效身份证件（扫描件）",
+        sub_content_2="",
+        sub_content_3="",
+        section_path="商务文件 / 法定代表人授权委托书 / 被授权人身份证等有效身份证件（扫描件）",
+    )
+    sections = [
+        ReconstructedSection(
+            section_id="sec-other",
+            title="国家企业信用信息公示系统网站自动生成的PDF文件",
+            normalized_title="国家企业信用信息公示系统网站自动生成的pdf文件",
+            level=1,
+            page_start=22,
+            page_end=23,
+            block_start_id="b-other-1",
+            block_end_id="b-other-9",
+            source_type="toc",
+        ),
+        ReconstructedSection(
+            section_id="sec-auth",
+            title="法定代表人授权委托书",
+            normalized_title="法定代表人授权委托书",
+            level=1,
+            page_start=834,
+            page_end=836,
+            block_start_id="b-auth-1",
+            block_end_id="b-auth-9",
+            source_type="toc",
+        ),
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="wrong-image-title",
+            page_no=22,
+            text="被授权人身份证等有效身份证件（扫描件）",
+            bbox=[0, 20, 10, 30],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="right-attachment-title",
+            page_no=835,
+            text="附：被授权人身份证等有效身份证件（扫描件）",
+            bbox=[0, 20, 10, 30],
+            block_no=2,
+        ),
+    ]
+
+    results = match_sections([rule], sections, plan=make_plan(rule.rule_id), blocks=blocks)
+
+    assert results[0].matched is True
+    assert results[0].matched_source_type == "text_block"
+    assert results[0].matched_page_no == 835
+    assert results[0].matched_container_title == "法定代表人授权委托书"
+    assert all(item.get("matched_page_no") != 22 for item in results[0].related_matches)

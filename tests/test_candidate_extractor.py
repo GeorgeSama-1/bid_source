@@ -100,6 +100,53 @@ def test_extract_candidates_marks_table_only_instance() -> None:
     assert candidates[0].dominant_material_type == "table"
 
 
+def test_extract_candidates_does_not_expand_page_span_with_other_container_related_match() -> None:
+    plan = _make_plan()
+    matches = [
+        SectionMatchResult(
+            rule_id="rule-1",
+            rule_section_path=plan.sections[0].section_path,
+            matched=True,
+            matched_source_type="text_block",
+            matched_section_id="block::b-current",
+            matched_title="3.8.2、经营状况",
+            matched_page_no=51,
+            matched_page_end=51,
+            matched_container_section_id="sec-current",
+            matched_container_title="3.8.2、经营状况",
+            matched_container_page_no=51,
+            matched_container_page_end=51,
+            confidence=0.95,
+            match_reason="block_line_contains",
+            related_matches=[
+                {
+                    "matched_source_type": "text_block",
+                    "matched_section_id": "block::b-previous",
+                    "matched_title": "3.8.1、上一章节",
+                    "matched_page_no": 50,
+                    "matched_page_end": 50,
+                    "matched_container_section_id": "sec-previous",
+                    "matched_container_title": "3.8.1、上一章节",
+                    "matched_container_page_no": 50,
+                    "matched_container_page_end": 50,
+                    "confidence": 0.9,
+                    "match_reason": "block_line_contains",
+                }
+            ],
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b-previous", page_no=50, text="上一章节内容", bbox=[0, 0, 1, 1], block_no=1),
+        PdfTextBlock(block_id="b-current", page_no=51, text="当前章节内容", bbox=[0, 0, 1, 1], block_no=1),
+    ]
+
+    candidates = extract_candidates(plan, matches, blocks, [], images=[])
+
+    assert candidates[0].source_page == 51
+    assert candidates[0].source_page_end == 51
+    assert candidates[0].content == "当前章节内容"
+
+
 def test_extract_candidates_only_keeps_from_history_bid_items() -> None:
     plan = ProcessingPlan(
         company_id="demo_company",

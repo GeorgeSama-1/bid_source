@@ -74,6 +74,8 @@ def _match_page_span(match: SectionMatchResult) -> tuple[int | None, int | None]
     start = match.matched_page_no
     end = match.matched_page_end or start
     for item in match.related_matches:
+        if not _same_match_container(match, item):
+            continue
         page_no = item.get("matched_page_no")
         page_end = item.get("matched_page_end") or page_no
         if not page_no:
@@ -81,6 +83,19 @@ def _match_page_span(match: SectionMatchResult) -> tuple[int | None, int | None]
         start = min(start, int(page_no)) if start else int(page_no)
         end = max(end, int(page_end)) if end else int(page_end)
     return start, end
+
+
+def _same_match_container(match: SectionMatchResult, item: dict[str, Any]) -> bool:
+    primary_container_id = match.matched_container_section_id or match.matched_section_id
+    related_container_id = item.get("matched_container_section_id") or item.get("matched_section_id")
+    if primary_container_id and related_container_id:
+        return primary_container_id == related_container_id
+
+    primary_title = match.matched_container_title or match.matched_title
+    related_title = item.get("matched_container_title") or item.get("matched_title")
+    if primary_title and related_title:
+        return str(primary_title).strip() == str(related_title).strip()
+    return True
 
 
 def _build_discovered_items(match: SectionMatchResult) -> list[dict[str, Any]]:
@@ -99,7 +114,7 @@ def _build_discovered_items(match: SectionMatchResult) -> list[dict[str, Any]]:
             "confidence": match.confidence,
             "match_reason": match.match_reason,
         },
-        *match.related_matches,
+        *[item for item in match.related_matches if _same_match_container(match, item)],
     ]
     seen = set()
     for item in seeds:

@@ -10,6 +10,9 @@ from bid_knowledge.schemas.models import PdfTextBlock, ProcessingPlan, Reconstru
 from bid_knowledge.utils.io_utils import write_json
 
 
+STABLE_CONTAINER_TITLES = {"法定代表人授权委托书"}
+
+
 def _extract_rule_titles(rule: SectionRule) -> list[str]:
     titles: list[str] = []
     for candidate in (rule.sub_content_3, rule.sub_content_2, rule.sub_content_1):
@@ -145,11 +148,45 @@ def _directory_like_pages(blocks: list[PdfTextBlock]) -> set[int]:
     return pages
 
 
-def _collect_block_matches(rule_title: str, blocks: list[PdfTextBlock], sections: list[ReconstructedSection]) -> list[dict[str, Any]]:
+def _section_in_scope(section: ReconstructedSection, scopes: list[ReconstructedSection]) -> bool:
+    return any(scope.page_start <= section.page_start <= scope.page_end and scope.page_start <= section.page_end <= scope.page_end for scope in scopes)
+
+
+def _block_in_scope(block: PdfTextBlock, scopes: list[ReconstructedSection]) -> bool:
+    return any(scope.page_start <= block.page_no <= scope.page_end for scope in scopes)
+
+
+def _stable_container_scope_sections(rule: SectionRule, sections: list[ReconstructedSection]) -> list[ReconstructedSection]:
+    parts = [part.strip() for part in str(rule.section_path or "").split(" / ") if part.strip()]
+    parent_title = (rule.module_name or "").strip()
+    if parent_title not in STABLE_CONTAINER_TITLES:
+        return []
+    if len(parts) < 3 or parent_title not in parts[:-1]:
+        return []
+    child_title = parts[-1]
+    if normalize_section_title(child_title) == normalize_section_title(parent_title):
+        return []
+    scopes: list[ReconstructedSection] = []
+    for section in sections:
+        score, _reason = _score_match(parent_title, section)
+        if score >= 0.8:
+            scopes.append(section)
+    return sorted(scopes, key=lambda item: (item.page_start, item.page_end))
+
+
+def _collect_block_matches(
+    rule_title: str,
+    blocks: list[PdfTextBlock],
+    sections: list[ReconstructedSection],
+    scope_sections: list[ReconstructedSection] | None = None,
+) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
     directory_pages = _directory_like_pages(blocks)
+    scopes = scope_sections or []
     for block in blocks:
         if block.page_no in directory_pages:
+            continue
+        if scopes and not _block_in_scope(block, scopes):
             continue
         for line in (part.strip() for part in block.text.splitlines() if part.strip()):
             score, reason = _score_block_line(rule_title, line)
@@ -324,9 +361,12 @@ def match_sections(
     for rule in rules:
         rule_titles = _extract_rule_titles(rule)
         primary_title = rule_titles[0]
+        scope_sections = _stable_container_scope_sections(rule, sections)
         match_candidates: list[dict[str, Any]] = []
         for title_rank, rule_title in enumerate(rule_titles):
             for section in sections:
+                if scope_sections and not _section_in_scope(section, scope_sections):
+                    continue
                 score, reason = _score_match(rule_title, section)
                 if score < 0.6:
                     continue
@@ -351,7 +391,7 @@ def match_sections(
                 )
 
         if blocks:
-            for item in _collect_block_matches(primary_title, blocks, sections):
+            for item in _collect_block_matches(primary_title, blocks, sections, scope_sections=scope_sections):
                 item["rule_title_rank"] = 0
                 match_candidates.append(item)
 
