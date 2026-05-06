@@ -1234,6 +1234,56 @@ def test_package_module_artifacts_packages_compound_financial_reports_by_detecte
     assert instance_meta["children"][0]["dominant_material_type"] == "mixed"
 
 
+def test_package_module_artifacts_uses_excel_instance_layer_for_compound_financial_reports(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+    candidates = [
+        _candidate(f"{anchor} / 3.7.1、2022 年度财务审计报告 / 封面", 10, 10, "财务状况"),
+        _candidate(f"{anchor} / 3.7.1、2022 年度财务审计报告 / 利润表", 12, 12, "财务状况"),
+        _candidate(f"{anchor} / 3.7.2、2023 年度财务审计报告 / 封面", 20, 20, "财务状况"),
+    ]
+    blocks = [
+        PdfTextBlock(block_id="cover2022", page_no=10, text="封面正文", bbox=[0, 80, 200, 95], block_no=1, font_size=10),
+        PdfTextBlock(block_id="profit2022", page_no=12, text="利润表正文", bbox=[0, 80, 200, 95], block_no=2, font_size=10),
+        PdfTextBlock(block_id="cover2023", page_no=20, text="封面正文", bbox=[0, 80, 200, 95], block_no=3, font_size=10),
+    ]
+    images = [
+        {"image_id": "cover-img", "page_no": 10, "xref": 101, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+        {"image_id": "profit-img", "page_no": 12, "xref": 102, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+        {"image_id": "cover-2023-img", "page_no": 20, "xref": 103, "width": 600, "height": 500, "rect": [20, 120, 300, 360], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*(?:财务|审计).*报告"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    anchor_markdown = (base / "material.md").read_text(encoding="utf-8")
+    instance_markdown = (base / "3.7.1、2022 年度财务审计报告" / "material.md").read_text(encoding="utf-8")
+    instance_meta = json.loads((base / "3.7.1、2022 年度财务审计报告" / "compound_instance_meta.json").read_text(encoding="utf-8"))
+
+    assert "[3.7.1、2022 年度财务审计报告](3.7.1、2022 年度财务审计报告/material.md)" in anchor_markdown
+    assert "[封面](封面/material.md)" in instance_markdown
+    assert "[利润表](利润表/material.md)" in instance_markdown
+    assert (base / "3.7.1、2022 年度财务审计报告" / "封面" / "image_items" / "封面_图1.json").exists()
+    assert (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "image_items" / "利润表_图1.json").exists()
+    assert not (base / "封面").exists()
+    assert instance_meta["instance_title"] == "3.7.1、2022 年度财务审计报告"
+    assert instance_meta["children"][0]["material_path"].endswith("/ 3.7.1、2022 年度财务审计报告 / 封面")
+
+
 def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) -> None:
     candidates = [
         _candidate(

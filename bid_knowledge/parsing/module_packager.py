@@ -1003,6 +1003,76 @@ def _renamed_compound_child_title(title: str, rule: dict[str, Any]) -> str:
     return clean
 
 
+def _compound_relative_parts(section_path: str, anchor_path: str) -> list[str]:
+    if section_path == anchor_path:
+        return []
+    prefix = f"{anchor_path} / "
+    if not section_path.startswith(prefix):
+        return []
+    return [part.strip() for part in section_path[len(prefix):].split(" / ") if part.strip()]
+
+
+def _looks_like_compound_instance_title(title: str, rule: dict[str, Any]) -> bool:
+    compact = re.sub(r"\s+", "", title or "")
+    if not compact:
+        return False
+    if _text_matches_any_pattern(compact, rule.get("instance_title_patterns") or []):
+        return True
+    return bool(re.search(r"20\d{2}.*(?:会计|财务|审计).*(?:报表|报告)", compact))
+
+
+def _candidate_page_range(candidates: list[ReusableCandidate]) -> tuple[int, int]:
+    pages = [page for candidate in candidates for page in _page_numbers(candidate)]
+    if not pages:
+        return 0, 0
+    return min(pages), max(pages)
+
+
+def _compound_instances_from_candidate_paths(
+    anchor_path: str,
+    child_paths: list[str],
+    grouped_candidates: dict[str, list[ReusableCandidate]],
+    rule: dict[str, Any],
+) -> list[dict[str, Any]]:
+    instances: dict[str, dict[str, Any]] = {}
+    for path in child_paths:
+        relative_parts = _compound_relative_parts(path, anchor_path)
+        if len(relative_parts) < 2:
+            continue
+        instance_title = sanitize_asset_name(relative_parts[0]).strip()
+        if not _looks_like_compound_instance_title(instance_title, rule):
+            continue
+        child_title = _renamed_compound_child_title(relative_parts[1], rule)
+        candidates = grouped_candidates.get(path, [])
+        page_start, page_end = _candidate_page_range(candidates)
+        instance = instances.setdefault(instance_title, {"title": instance_title, "children": {}})
+        child = instance["children"].setdefault(child_title, {"title": child_title, "candidates": []})
+        child["candidates"].extend(candidates)
+        if page_start:
+            child["page_start"] = min(int(child.get("page_start") or page_start), page_start)
+            child["page_end"] = max(int(child.get("page_end") or page_end), page_end)
+
+    normalized: list[dict[str, Any]] = []
+    for instance in instances.values():
+        children = [
+            child
+            for child in instance["children"].values()
+            if int(child.get("page_start") or 0) > 0
+        ]
+        if not children:
+            continue
+        children = sorted(children, key=lambda child: (int(child.get("page_start") or 0), str(child.get("title") or "")))
+        normalized.append(
+            {
+                "title": instance["title"],
+                "page_start": min(int(child["page_start"]) for child in children),
+                "page_end": max(int(child["page_end"]) for child in children),
+                "children": children,
+            }
+        )
+    return sorted(normalized, key=lambda item: (int(item["page_start"]), str(item["title"])))
+
+
 def _package_compound_materials(
     rules: list[dict[str, Any]],
     grouped_candidates: dict[str, list[ReusableCandidate]],
@@ -1042,6 +1112,144 @@ def _package_compound_materials(
             ],
             key=_image_sort_key,
         )
+        path_instances = _compound_instances_from_candidate_paths(anchor_path, child_paths, grouped_candidates, rule)
+        anchor_manifest: dict[str, Any] = {
+            "material_type": "compound",
+            "excel_anchor_path": anchor_path,
+            "instance_count": 0,
+            "instances": [],
+        }
+        instance_markdown_entries: list[tuple[str, Path]] = []
+        if path_instances:
+            for instance_data in path_instances:
+                instance_title = str(instance_data["title"])
+                instance_dir = ensure_dir(anchor_dir / _safe_dirname(instance_title))
+                path_parts = _section_parts(anchor_path) + [instance_title]
+                children_meta: list[dict[str, Any]] = []
+                child_markdown_entries: list[tuple[str, Path]] = []
+                for child_data in instance_data["children"]:
+                    child_title = str(child_data["title"])
+                    child_start_page = int(child_data["page_start"])
+                    child_end_page = int(child_data["page_end"])
+                    child_page_set = set(range(child_start_page, child_end_page + 1))
+                    child_blocks = [block for block in scoped_blocks if block.page_no in child_page_set]
+                    child_tables = [table for table in scoped_tables if table.page_no in child_page_set]
+                    child_images = [image for image in scoped_images if int(image.get("page_no") or 0) in child_page_set]
+                    child_dir = ensure_dir(instance_dir / _safe_dirname(child_title))
+                    text_item = _write_text_item(
+                        item_dir=ensure_dir(child_dir / "text_items"),
+                        folder_title=child_title,
+                        text_blocks=child_blocks,
+                        section_path=anchor_path,
+                        path_parts=path_parts,
+                        pdf_path=pdf_path,
+                    )
+
+                    table_items: list[dict[str, Any]] = []
+                    for table_index, table in enumerate(sorted(child_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])), start=1):
+                        top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0
+                        table_title = _sanitize_item_title(child_title, f"表{table_index}")
+                        item_dir = ensure_dir(child_dir / "table_items")
+                        json_path = item_dir / _item_filename(table_title, "json")
+                        item = {
+                            **_table_dict(table),
+                            "section_path": anchor_path,
+                            "folder_parts": path_parts + [child_title],
+                            "compound_instance_title": instance_title,
+                            "child_title": child_title,
+                            "table_title": table_title,
+                            "context_title": child_title,
+                            "source_file": str(pdf_path or ""),
+                            "review_status": "pending",
+                            "json_path": str(json_path),
+                            "_top_y": top_y,
+                        }
+                        write_json(json_path, item)
+                        table_items.append(item)
+
+                    image_items: list[dict[str, Any]] = []
+                    for image_index, image in enumerate(child_images, start=1):
+                        rect = image.get("rect") or [0, 0, 0, 0]
+                        top_y = float(rect[1]) if len(rect) >= 2 else 0.0
+                        image_title = _sanitize_item_title(child_title, f"图{image_index}")
+                        item_dir = ensure_dir(child_dir / "image_items")
+                        image_bytes, ext = _resolve_image_bytes(image, image_bytes_resolver, doc)
+                        image_path = item_dir / _item_filename(image_title, ext)
+                        if image_bytes is not None:
+                            image_path.write_bytes(image_bytes)
+                        json_path = item_dir / _item_filename(image_title, "json")
+                        item = {
+                            **image,
+                            "section_path": anchor_path,
+                            "folder_parts": path_parts + [child_title],
+                            "compound_instance_title": instance_title,
+                            "child_title": child_title,
+                            "image_title": image_title,
+                            "context_title": child_title,
+                            "source_file": str(pdf_path or ""),
+                            "review_status": "pending",
+                            "file_path": str(image_path),
+                            "json_path": str(json_path),
+                            "_top_y": top_y,
+                        }
+                        write_json(json_path, item)
+                        image_items.append(item)
+
+                    child_meta = _write_material_package(
+                        material_dir=child_dir,
+                        subfolder={
+                            "folder_title": child_title,
+                            "page_start": child_start_page,
+                            "page_end": child_end_page,
+                            "start_y": _block_top_y(child_blocks[0]) if child_blocks else None,
+                            "end_y": _block_top_y(child_blocks[-1]) if child_blocks else None,
+                            "start_block_id": child_blocks[0].block_id if child_blocks else None,
+                            "end_block_id": child_blocks[-1].block_id if child_blocks else None,
+                        },
+                        section_path=anchor_path,
+                        path_parts=path_parts,
+                        pdf_path=pdf_path,
+                        doc=doc,
+                        text_blocks=child_blocks,
+                        text_item=text_item,
+                        table_items=table_items,
+                        image_items=image_items,
+                        image_bytes_resolver=image_bytes_resolver,
+                        allow_submaterials=False,
+                    )
+                    children_meta.append(child_meta)
+                    child_markdown_entries.append((child_title, child_dir / "material.md"))
+
+                instance_markdown_path = _write_material_index_markdown(instance_dir, instance_title, child_markdown_entries)
+                instance_meta = CompoundInstanceMeta(
+                    material_type="compound_instance",
+                    excel_anchor_path=anchor_path,
+                    rule_anchor_path=anchor_path,
+                    instance_title=instance_title,
+                    instance_path=_material_path(_section_parts(anchor_path) + [instance_title]),
+                    source_page_start=int(instance_data["page_start"]),
+                    source_page_end=int(instance_data["page_end"]),
+                    source_start_y=None,
+                    source_end_y=None,
+                    child_count=len(children_meta),
+                    children=[MaterialMeta(**child) for child in children_meta],
+                    review_status="pending",
+                    material_markdown_path=str(instance_markdown_path.relative_to(instance_dir)),
+                )
+                write_json(instance_dir / "compound_instance_meta.json", instance_meta)
+                anchor_manifest["instances"].append(instance_meta)
+                instance_markdown_entries.append((instance_title, instance_dir / "material.md"))
+
+            anchor_manifest["instance_count"] = len(anchor_manifest["instances"])
+            anchor_manifest["material_markdown_path"] = str(_write_material_index_markdown(
+                anchor_dir,
+                _section_parts(anchor_path)[-1] if _section_parts(anchor_path) else anchor_path,
+                instance_markdown_entries,
+            ).relative_to(anchor_dir))
+            write_json(anchor_dir / "compound_materials_manifest.json", anchor_manifest)
+            manifests.append(anchor_manifest)
+            continue
+
         instance_blocks = sorted(
             [
                 block
@@ -1053,13 +1261,6 @@ def _package_compound_materials(
         if not instance_blocks:
             continue
 
-        anchor_manifest: dict[str, Any] = {
-            "material_type": "compound",
-            "excel_anchor_path": anchor_path,
-            "instance_count": 0,
-            "instances": [],
-        }
-        instance_markdown_entries: list[tuple[str, Path]] = []
         for index, instance in enumerate(instance_blocks):
             next_instance = instance_blocks[index + 1] if index + 1 < len(instance_blocks) else None
             start_page = instance.page_no
