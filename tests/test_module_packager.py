@@ -519,6 +519,48 @@ def test_package_module_artifacts_scopes_planned_authorization_attachment_to_mat
     assert exported_images == ["法定代表人（单位负责人）身份证（扫描件）_图1.json"]
 
 
+def test_package_module_artifacts_keeps_two_id_card_sides_and_filters_seal(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人（单位负责人）身份证（扫描件）",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 100, 300, 120], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="身份证正反面", bbox=[0, 130, 300, 150], block_no=3),
+        PdfTextBlock(block_id="b4", page_no=1, text="附：被授权人身份证等有效身份证件（扫描件）", bbox=[0, 520, 300, 540], block_no=4),
+    ]
+    images = [
+        {"image_id": "front", "page_no": 1, "xref": 31, "width": 900, "height": 560, "rect": [10, 170, 420, 300], "ext": "png"},
+        {"image_id": "back", "page_no": 1, "xref": 32, "width": 900, "height": 560, "rect": [10, 320, 420, 450], "ext": "png"},
+        {"image_id": "seal", "page_no": 1, "xref": 33, "width": 180, "height": 180, "rect": [450, 220, 510, 280], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    image_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人（单位负责人）身份证（扫描件）" / "image_items"
+    exported_json = sorted(path.name for path in image_dir.glob("*.json"))
+    exported = [json.loads((image_dir / name).read_text(encoding="utf-8")) for name in exported_json]
+
+    assert exported_json == [
+        "法定代表人（单位负责人）身份证（扫描件）_图1.json",
+        "法定代表人（单位负责人）身份证（扫描件）_图2.json",
+    ]
+    assert [item["image_id"] for item in exported] == ["front", "back"]
+    assert [item["rect"] for item in exported] == [[10, 170, 420, 300], [10, 320, 420, 450]]
+
+
 def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -> None:
     candidates = [
         _candidate(

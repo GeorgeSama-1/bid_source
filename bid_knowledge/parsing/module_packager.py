@@ -167,6 +167,30 @@ def _is_authorization_attachment_leaf(section_path: str) -> bool:
     return parts[0] == "法定代表人授权委托书" and any(keyword in parts[-1] for keyword in ("身份证", "扫描件", "有效身份证件"))
 
 
+def _is_identity_card_like_image(image: dict[str, Any]) -> bool:
+    rect = image.get("rect") or [0, 0, 0, 0]
+    if len(rect) < 4:
+        return False
+    rect_width = abs(float(rect[2]) - float(rect[0]))
+    rect_height = abs(float(rect[3]) - float(rect[1]))
+    rect_area = rect_width * rect_height
+    intrinsic_width = int(image.get("width") or 0)
+    intrinsic_height = int(image.get("height") or 0)
+    intrinsic_area = intrinsic_width * intrinsic_height
+    if rect_width < 120 or rect_height < 70 or rect_area < 15000:
+        return False
+    if intrinsic_width and intrinsic_height and intrinsic_area < 120000:
+        return False
+    ratio = rect_width / rect_height if rect_height else 0.0
+    return 1.2 <= ratio <= 8.0
+
+
+def _limit_authorization_identity_images(section_path: str, images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not _is_authorization_attachment_leaf(section_path):
+        return images
+    return [image for image in sorted(images, key=_image_sort_key) if _is_identity_card_like_image(image)][:2]
+
+
 def _attachment_scope_for_section(section_path: str, blocks: list[PdfTextBlock]) -> dict[str, Any] | None:
     if not _is_authorization_attachment_leaf(section_path):
         return None
@@ -1438,6 +1462,8 @@ def package_module_artifacts(
                         attachment_scope.get("end_y"),
                     )
                 ]
+            if attachment_scope:
+                module_images = _limit_authorization_identity_images(section_path, module_images)
             module_page_material_items = _page_material_items_for_pages(page_material_items or [], pages)
             if attachment_scope:
                 module_page_material_items = _page_material_items_in_range(
