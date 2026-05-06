@@ -237,6 +237,7 @@ def _ordered_material_items(
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     decorative_text = _decorative_text_signatures(text_blocks)
+    heading_candidates = build_heading_candidates([_block_dict(block) for block in text_blocks if not _is_decorative_text_block(block, decorative_text)])
     for block in text_blocks:
         if _is_decorative_text_block(block, decorative_text):
             continue
@@ -315,6 +316,12 @@ def _ordered_material_items(
             continue
         bbox = stream_item.get("bbox") or []
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
+        page_no = int(stream_item.get("page_no") or 0)
+        nearest = find_nearest_heading(heading_candidates, page_no, top_y)
+        stream_heading = nearest_heading
+        if nearest:
+            raw_title = str(nearest.get("raw_title") or "")
+            stream_heading = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
         ordered.append(
             MaterialItemRef(
                 type=item_type,
@@ -325,7 +332,7 @@ def _ordered_material_items(
                 bbox=bbox if item_type != "image" else None,
                 rect=bbox if item_type == "image" else None,
                 text=stream_item.get("text") if item_type == "text" else None,
-                nearest_heading=nearest_heading,
+                nearest_heading=stream_heading,
                 rule_section_path=rule_section_path,
                 material_path=material_path,
                 source_type=stream_item.get("source_type"),

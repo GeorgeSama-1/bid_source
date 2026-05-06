@@ -329,6 +329,120 @@ def test_package_module_artifacts_filters_repeated_page_header_text(tmp_path: Pa
     assert "企业营业执照副本" in dumped
 
 
+def test_package_module_artifacts_assigns_stream_image_to_nearest_body_heading(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）",
+            22,
+            22,
+            "3.4、企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）",
+        )
+    ]
+    header = "国网甘肃省电力公司【测控及在线监测系统】包05、包06、包07、包08——商务投标文件"
+    blocks = [
+        PdfTextBlock(block_id="h22", page_no=22, text=header, bbox=[824, 23, 1666, 48], block_no=1),
+        PdfTextBlock(
+            block_id="title22",
+            page_no=22,
+            text="3.4、企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）",
+            bbox=[20, 90, 950, 117],
+            block_no=2,
+        ),
+        PdfTextBlock(
+            block_id="seat-title",
+            page_no=22,
+            text="（1）座位图片",
+            bbox=[20, 150, 300, 170],
+            block_no=3,
+        ),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-22",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=22,
+            top_y=200,
+            bbox=[164, 200, 1502, 1024],
+            text="",
+            payload={"layout_label": "image"},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    ordered_path = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）"
+        / "ordered_material.json"
+    )
+    ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
+    stream_image = next(item for item in ordered["items"] if item.get("item_id") == "pp-image-22")
+
+    assert stream_image["nearest_heading"] == "座位图片"
+    assert header not in stream_image["nearest_heading"]
+
+
+def test_package_module_artifacts_assigns_attachment_stream_image_to_fu_heading(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="授权正文", bbox=[0, 80, 300, 100], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="附：被授权人身份证等有效身份证件（扫描件）", bbox=[0, 120, 300, 140], block_no=3),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-id-card",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=180,
+            bbox=[10, 180, 500, 420],
+            text="",
+            payload={"layout_label": "image"},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    child_ordered_path = (
+        tmp_path
+        / "modules"
+        / "法定代表人授权委托书"
+        / "法定代表人授权委托书"
+        / "submaterials"
+        / "被授权人身份证等有效身份证件（扫描件）"
+        / "ordered_material.json"
+    )
+    child_ordered = json.loads(child_ordered_path.read_text(encoding="utf-8"))
+    stream_image = next(item for item in child_ordered["items"] if item.get("item_id") == "pp-image-id-card")
+
+    assert stream_image["nearest_heading"] == "附：被授权人身份证等有效身份证件（扫描件）"
+
+
 def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -> None:
     candidates = [
         _candidate(
