@@ -1430,6 +1430,83 @@ def test_package_module_artifacts_keeps_matched_compound_child_when_no_instance_
     assert "利润表正文" in (base / "利润表" / "material.md").read_text(encoding="utf-8")
 
 
+def test_package_module_artifacts_uses_candidate_container_as_compound_instance(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+    candidates = [
+        _candidate(f"{anchor} / 利润表", 12, 12, "3.7.1、2022 年度财务审计报告"),
+        _candidate(f"{anchor} / 资产负债表", 11, 11, "3.7.1、2022 年度财务审计报告"),
+    ]
+    blocks = [
+        PdfTextBlock(block_id="balance2022", page_no=11, text="资产负债表正文", bbox=[0, 80, 200, 95], block_no=1, font_size=10),
+        PdfTextBlock(block_id="profit2022", page_no=12, text="利润表正文", bbox=[0, 80, 200, 95], block_no=2, font_size=10),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*(?:财务|审计).*报告"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    assert (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").exists()
+    assert (base / "3.7.1、2022 年度财务审计报告" / "资产负债表" / "material.md").exists()
+    assert not (base / "利润表").exists()
+    assert "利润表正文" in (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").read_text(encoding="utf-8")
+
+
+def test_package_module_artifacts_prefers_pdf_embedded_images_over_pp_structure_crops(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 企业营业执照扫描件",
+            1,
+            1,
+            "企业营业执照扫描件",
+        )
+    ]
+    images = [
+        {"image_id": "pdf-img", "page_no": 1, "xref": 31, "width": 900, "height": 560, "rect": [10, 170, 420, 300], "ext": "png"},
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-1",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=170,
+            bbox=[10, 170, 420, 300],
+            text="",
+            payload={"layout_label": "image", "page_width": 500, "page_height": 700},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"pdf-image", item.get("ext", "png")),
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "企业营业执照扫描件"
+    image_files = sorted(path.name for path in (material_dir / "image_items").glob("*.png"))
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert image_files == ["企业营业执照扫描件_图1.png"]
+    assert all(item.get("item_id") != "pp-image-1" for item in ordered["items"])
+
+
 def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) -> None:
     candidates = [
         _candidate(

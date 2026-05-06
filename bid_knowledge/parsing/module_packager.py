@@ -608,6 +608,12 @@ def _write_material_package(
         text_item = None
         table_items = []
         page_material_items = [item for item in page_material_items or [] if str(item.get("item_type") or item.get("type") or "") == "image"]
+    if image_items:
+        page_material_items = [
+            item
+            for item in page_material_items or []
+            if str(item.get("item_type") or item.get("type") or "") != "image"
+        ]
     submaterial_items = (
         _write_attachment_submaterials(
             material_dir=material_dir,
@@ -1046,13 +1052,21 @@ def _compound_instances_from_candidate_paths(
     instances: dict[str, dict[str, Any]] = {}
     for path in child_paths:
         relative_parts = _compound_relative_parts(path, anchor_path)
-        if len(relative_parts) < 2:
+        if not relative_parts:
             continue
-        instance_title = sanitize_asset_name(relative_parts[0]).strip()
-        if not _looks_like_compound_instance_title(instance_title, rule):
-            continue
-        child_title = _renamed_compound_child_title(relative_parts[1], rule)
         candidates = grouped_candidates.get(path, [])
+        instance_title = sanitize_asset_name(relative_parts[0]).strip()
+        child_title_source = relative_parts[1] if len(relative_parts) >= 2 else relative_parts[0]
+        if not _looks_like_compound_instance_title(instance_title, rule):
+            source_titles = [
+                sanitize_asset_name(str(candidate.source_container_title or "")).strip()
+                for candidate in candidates
+            ]
+            instance_title = next((title for title in source_titles if _looks_like_compound_instance_title(title, rule)), "")
+            child_title_source = relative_parts[0]
+        if not instance_title:
+            continue
+        child_title = _renamed_compound_child_title(child_title_source, rule)
         page_start, page_end = _candidate_page_range(candidates)
         instance = instances.setdefault(instance_title, {"title": instance_title, "children": {}})
         child = instance["children"].setdefault(child_title, {"title": child_title, "candidates": []})
