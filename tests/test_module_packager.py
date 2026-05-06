@@ -1129,6 +1129,93 @@ def test_package_module_artifacts_writes_complete_material_package_for_review_in
     assert meta["material_markdown_path"] == "material.md"
 
 
+def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 投标保证保险",
+            1,
+            1,
+            "投标保证保险",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="投标保证保险正文", bbox=[0, 100, 300, 120], block_no=1),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-text-1",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=1,
+            top_y=100,
+            bbox=[0, 100, 300, 120],
+            text="投标保证保险正文",
+            payload={"ocr_texts": ["投标保证保险正文"]},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_md = (tmp_path / "modules" / "投标保证保险" / "material.md").read_text(encoding="utf-8")
+    assert material_md.count("投标保证保险正文") == 1
+
+
+def test_package_module_artifacts_writes_authorization_identity_attachment_as_images_only_with_pp_text(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 被授权人身份证等有效身份证件（扫描件）",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="附：被授权人身份证等有效身份证件（扫描件）", bbox=[0, 80, 300, 100], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="姓名 张三", bbox=[0, 120, 300, 140], block_no=2),
+    ]
+    images = [
+        {"image_id": "front", "page_no": 1, "xref": 31, "width": 900, "height": 560, "rect": [10, 170, 420, 300], "ext": "png"},
+        {"image_id": "back", "page_no": 1, "xref": 32, "width": 900, "height": 560, "rect": [10, 320, 420, 450], "ext": "png"},
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-text-id",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=1,
+            top_y=120,
+            bbox=[0, 120, 300, 140],
+            text="姓名 张三\n身份证号 330000000000000000",
+            payload={"ocr_texts": ["姓名 张三", "身份证号 330000000000000000"]},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "法定代表人授权委托书" / "被授权人身份证等有效身份证件（扫描件）"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    assert material_md.count("![") == 2
+    assert "姓名 张三" not in material_md
+    assert "身份证号" not in material_md
+    assert "被授权人身份证等有效身份证件（扫描件）_图1.png" in material_md
+    assert "被授权人身份证等有效身份证件（扫描件）_图2.png" in material_md
+
+
 def test_package_module_artifacts_writes_image_only_material_markdown_in_order(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -1282,6 +1369,65 @@ def test_package_module_artifacts_uses_excel_instance_layer_for_compound_financi
     assert not (base / "封面").exists()
     assert instance_meta["instance_title"] == "3.7.1、2022 年度财务审计报告"
     assert instance_meta["children"][0]["material_path"].endswith("/ 3.7.1、2022 年度财务审计报告 / 封面")
+
+
+def test_package_module_artifacts_keeps_planned_compound_paths_when_no_compound_instance_was_built(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+
+    package_module_artifacts(
+        candidates=[],
+        blocks=[],
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        planned_section_paths=[
+            f"{anchor} / 3.7.1、2022 年度财务审计报告 / 封面",
+            f"{anchor} / 3.7.1、2022 年度财务审计报告 / 利润表",
+        ],
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*(?:财务|审计).*报告"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    assert (base / "material.md").exists()
+    assert (base / "3.7.1、2022 年度财务审计报告" / "封面" / "material.md").exists()
+    assert (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").exists()
+
+
+def test_package_module_artifacts_keeps_matched_compound_child_when_no_instance_was_built(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+    candidates = [
+        _candidate(f"{anchor} / 利润表", 12, 12, "财务状况"),
+    ]
+    blocks = [
+        PdfTextBlock(block_id="profit2022", page_no=12, text="利润表正文", bbox=[0, 80, 200, 95], block_no=1, font_size=10),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*(?:财务|审计).*报告"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    assert (base / "利润表" / "material.md").exists()
+    assert "利润表正文" in (base / "利润表" / "material.md").read_text(encoding="utf-8")
 
 
 def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) -> None:

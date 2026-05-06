@@ -512,11 +512,14 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
     if has_non_image:
         lines.extend([f"# {material_title}", ""])
 
+    seen_texts: set[str] = set()
     for item in ordered_items:
         item_type = str(item.get("item_type") or item.get("type") or "")
         if item_type == "text":
             text = str(item.get("text") or "").strip()
-            if text:
+            text_key = re.sub(r"\s+", "", text)
+            if text and text_key not in seen_texts:
+                seen_texts.add(text_key)
                 lines.extend([text, ""])
         elif item_type == "image":
             image_path = _relative_markdown_path(material_dir, item.get("file_path"))
@@ -594,17 +597,17 @@ def _write_material_package(
     page_material_items: list[dict[str, Any]] | None = None,
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None = None,
     allow_submaterials: bool = True,
+    image_only: bool = False,
 ) -> dict[str, Any]:
     page_start = int(subfolder["page_start"])
     page_end = int(subfolder["page_end"])
     original_status = _write_original_capture(material_dir / "original", doc, page_start, page_end)
     material_path = _material_path(path_parts + [subfolder["folder_title"]])
-    material_types = _merge_material_types(
-        _material_types(text_item=text_item, table_items=table_items, image_items=image_items),
-        page_material_items,
-    )
-    dominant_material_type = _dominant_material_type(material_types)
     raw_context_title = text_blocks[0].text if text_blocks else subfolder["folder_title"]
+    if image_only:
+        text_item = None
+        table_items = []
+        page_material_items = [item for item in page_material_items or [] if str(item.get("item_type") or item.get("type") or "") == "image"]
     submaterial_items = (
         _write_attachment_submaterials(
             material_dir=material_dir,
@@ -630,6 +633,12 @@ def _write_material_package(
         page_material_items=page_material_items or [],
         doc=doc,
     )
+    ordered_text_blocks = [] if image_only else text_blocks
+    material_types = _merge_material_types(
+        _material_types(text_item=text_item, table_items=table_items, image_items=image_items),
+        page_material_items,
+    )
+    dominant_material_type = _dominant_material_type(material_types)
     ordered = OrderedMaterialPackage(
         material_title=subfolder["folder_title"],
         section_path=section_path,
@@ -644,7 +653,7 @@ def _write_material_package(
                 material_path=material_path,
                 rule_section_path=section_path,
                 nearest_heading=raw_context_title,
-                text_blocks=text_blocks,
+                text_blocks=ordered_text_blocks,
                 text_item=text_item,
                 table_items=table_items,
                 image_items=image_items,
@@ -1812,16 +1821,6 @@ def package_module_artifacts(
         )
 
     compound_rules = _normalize_compound_rules(compound_material_rules)
-    compound_covered_paths = {
-        path
-        for path in set(grouped_candidates)
-        for rule in compound_rules
-        if _is_under_section_path(path, str(rule["excel_anchor_path"]))
-    }
-    all_section_paths = sorted((set((planned_section_paths or [])) | set(grouped_candidates)) - compound_covered_paths)
-    review_index_entries = align_business_review_index_entries(parse_business_review_index(blocks, tables), set(all_section_paths))
-    review_index_map = _subfolder_range_map(review_index_entries, blocks)
-    path_mapping = _section_dirnames(all_section_paths)
     global_manifest: dict[str, Any] = {"sections": [], "compound_materials": []}
     doc = fitz.open(pdf_path) if pdf_path and fitz else None
     try:
@@ -1837,6 +1836,21 @@ def package_module_artifacts(
             doc=doc,
             decorative_signatures=decorative_signatures,
         )
+        generated_compound_anchors = {
+            str(manifest.get("excel_anchor_path") or "")
+            for manifest in global_manifest["compound_materials"]
+            if int(manifest.get("instance_count") or 0) > 0
+        }
+        compound_covered_paths = {
+            path
+            for path in set(grouped_candidates) | set(planned_section_paths or [])
+            for anchor_path in generated_compound_anchors
+            if _is_under_section_path(path, anchor_path)
+        }
+        all_section_paths = sorted((set((planned_section_paths or [])) | set(grouped_candidates)) - compound_covered_paths)
+        review_index_entries = align_business_review_index_entries(parse_business_review_index(blocks, tables), set(all_section_paths))
+        review_index_map = _subfolder_range_map(review_index_entries, blocks)
+        path_mapping = _section_dirnames(all_section_paths)
         for section_path in all_section_paths:
             section_candidates = grouped_candidates.get(section_path, [])
             safe_parts = path_mapping.get(section_path, [_safe_dirname(section_path)])
@@ -2079,7 +2093,8 @@ def package_module_artifacts(
 
             if not section_subfolders and section_candidates:
                 root_folder_title = path_parts[-1] if path_parts else section_path
-                root_text_item = _write_text_item(
+                root_image_only = _is_authorization_attachment_leaf(section_path)
+                root_text_item = None if root_image_only else _write_text_item(
                     item_dir=text_items_dir,
                     folder_title=root_folder_title,
                     text_blocks=module_blocks,
@@ -2112,6 +2127,7 @@ def package_module_artifacts(
                         page_material_items=module_page_material_items,
                         image_bytes_resolver=image_bytes_resolver,
                         allow_submaterials=not _is_authorization_attachment_leaf(section_path),
+                        image_only=root_image_only,
                     )
                 )
             elif section_subfolders:
