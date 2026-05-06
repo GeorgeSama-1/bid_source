@@ -31,6 +31,81 @@ def _ocr_scores(pp_result: dict[str, Any]) -> list[float]:
     return scores
 
 
+def _ocr_boxes(pp_result: dict[str, Any]) -> list[list[float]]:
+    ocr = pp_result.get("overall_ocr_res") or {}
+    if not isinstance(ocr, dict):
+        return []
+    boxes: list[list[float]] = []
+    for box in ocr.get("rec_boxes") or []:
+        if not isinstance(box, list | tuple):
+            continue
+        values: list[float] = []
+        for value in box:
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if len(values) >= 4:
+            boxes.append(values[:4])
+    return boxes
+
+
+def _box_center(box: list[float]) -> tuple[float, float]:
+    return (float(box[0]) + float(box[2])) / 2.0, (float(box[1]) + float(box[3])) / 2.0
+
+
+def _box_center_in_region(box: list[float], region: list[float]) -> bool:
+    if len(box) < 4 or len(region) < 4:
+        return False
+    center_x, center_y = _box_center(box)
+    tolerance = 4.0
+    return (
+        float(region[0]) - tolerance <= center_x <= float(region[2]) + tolerance
+        and float(region[1]) - tolerance <= center_y <= float(region[3]) + tolerance
+    )
+
+
+def _is_margin_ocr_noise(text: str, box: list[float], page_height: int | None) -> bool:
+    normalized = "".join(str(text or "").split())
+    if not normalized:
+        return True
+    top = float(box[1]) if len(box) >= 2 else 0.0
+    bottom = float(box[3]) if len(box) >= 4 else top
+    near_top = top <= 90
+    near_bottom = bool(page_height and bottom >= float(page_height) - 70)
+    if near_top and any(keyword in normalized for keyword in ("NI.INF", "理工能科", "商务投标文件", "测控及在线监测系统")):
+        return True
+    if near_bottom and normalized.isdigit():
+        return True
+    return False
+
+
+def _ocr_texts_in_region(
+    *,
+    texts: list[str],
+    scores: list[float],
+    boxes: list[list[float]],
+    region: list[float],
+    page_height: int | None,
+) -> tuple[list[str], list[float]]:
+    if not boxes:
+        return [], []
+    selected_texts: list[str] = []
+    selected_scores: list[float] = []
+    for index, text in enumerate(texts):
+        if index >= len(boxes):
+            continue
+        box = boxes[index]
+        if not _box_center_in_region(box, region):
+            continue
+        if _is_margin_ocr_noise(text, box, page_height):
+            continue
+        selected_texts.append(text)
+        if index < len(scores):
+            selected_scores.append(scores[index])
+    return selected_texts, selected_scores
+
+
 def build_page_material_stream(
     *,
     blocks: list[PdfTextBlock],
@@ -100,7 +175,12 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
     items: list[PageMaterialItem] = []
     ocr_texts = _ocr_texts(pp_result)
     ocr_scores = _ocr_scores(pp_result)
-    ocr_text = "\n".join(ocr_texts)
+    ocr_boxes = _ocr_boxes(pp_result)
+    page_height = pp_result.get("height")
+    try:
+        page_height_int = int(page_height) if page_height else None
+    except (TypeError, ValueError):
+        page_height_int = None
 
     for index, block in enumerate(pp_result.get("parsing_res_list") or [], start=1):
         label = str(block.get("block_label") or "")
@@ -173,6 +253,15 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
         if not has_parsed_text and label in {"doc_title", "paragraph_title", "text"}:
             fallback_text_index += 1
             bbox = [float(value) for value in (box.get("coordinate") or [])]
+            region_texts, region_scores = _ocr_texts_in_region(
+                texts=ocr_texts,
+                scores=ocr_scores,
+                boxes=ocr_boxes,
+                region=bbox,
+                page_height=page_height_int,
+            )
+            if not region_texts:
+                continue
             items.append(
                 PageMaterialItem(
                     item_id=f"pp-text-region-{page_no}-{fallback_text_index}",
@@ -181,12 +270,12 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                     page_no=page_no,
                     top_y=_top_from_bbox(bbox),
                     bbox=bbox,
-                    text=ocr_text,
+                    text="\n".join(region_texts),
                     payload={
                         "layout_label": label,
                         "score": box.get("score"),
-                        "ocr_texts": ocr_texts,
-                        "ocr_scores": ocr_scores,
+                        "ocr_texts": region_texts,
+                        "ocr_scores": region_scores,
                     },
                 )
             )

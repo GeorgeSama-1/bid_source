@@ -32,6 +32,18 @@ def _float_list(value: Any) -> list[float]:
     return result
 
 
+def _float_matrix(value: Any) -> list[list[float]]:
+    plain = _to_plain(value)
+    if not isinstance(plain, list):
+        return []
+    rows: list[list[float]] = []
+    for row in plain:
+        values = _float_list(row)
+        if values:
+            rows.append(values)
+    return rows
+
+
 def _int_or_none(value: Any) -> int | None:
     try:
         return int(_to_plain(value))
@@ -89,6 +101,7 @@ def _slim_overall_ocr_res(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "rec_texts": [str(item) for item in (_to_plain(raw.get("rec_texts")) or [])],
         "rec_scores": _float_list(raw.get("rec_scores")),
+        "rec_boxes": _float_matrix(raw.get("rec_boxes")),
         "text_type": str(raw.get("text_type") or ""),
     }
 

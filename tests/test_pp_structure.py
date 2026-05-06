@@ -47,6 +47,7 @@ def test_normalize_pp_structure_result_drops_heavy_runtime_payloads() -> None:
                 "rec_polys": _ArrayLike(range(1000)),
                 "rec_texts": ["营业执照", "名称"],
                 "rec_scores": _ArrayLike([0.98, 0.97]),
+                "rec_boxes": _ArrayLike([[10, 20, 110, 40], [10, 50, 80, 70]]),
             },
         }
     }
@@ -76,5 +77,6 @@ def test_normalize_pp_structure_result_drops_heavy_runtime_payloads() -> None:
     assert payload["overall_ocr_res"] == {
         "rec_texts": ["营业执照", "名称"],
         "rec_scores": [0.98, 0.97],
+        "rec_boxes": [[10.0, 20.0, 110.0, 40.0], [10.0, 50.0, 80.0, 70.0]],
         "text_type": "",
     }

@@ -87,7 +87,7 @@ def test_build_pp_structure_page_material_items_normalizes_layout_blocks() -> No
     assert items[2].payload["layout_label"] == "image"
 
 
-def test_build_pp_structure_page_material_items_falls_back_to_layout_and_ocr_texts() -> None:
+def test_build_pp_structure_page_material_items_falls_back_to_spatial_ocr_texts() -> None:
     pp_result = {
         "parsing_res_list": [],
         "layout_det_res": {
@@ -120,8 +120,21 @@ def test_build_pp_structure_page_material_items_falls_back_to_layout_and_ocr_tex
             ]
         },
         "overall_ocr_res": {
-            "rec_texts": ["3.4、企业营业执照（扫描件）", "统一社会信用代码", "913302007251641924"],
+            "rec_texts": [
+                "NI.INF 理工能科",
+                "国网甘肃省电力公司【测控及在线监测系统】包05、包06、包07、包08—一商务投标文件",
+                "3.4、企业营业执照（扫描件）",
+                "统一社会信用代码",
+                "913302007251641924",
+            ],
             "rec_scores": [0.99, 0.98, 0.95],
+            "rec_boxes": [
+                [69, 3, 180, 28],
+                [824, 23, 1666, 48],
+                [140, 150, 900, 180],
+                [850, 980, 1050, 995],
+                [850, 996, 1080, 1010],
+            ],
             "text_type": "general",
         },
     }
@@ -130,12 +143,35 @@ def test_build_pp_structure_page_material_items_falls_back_to_layout_and_ocr_tex
 
     assert [item.item_type for item in items] == ["text", "image", "table", "text"]
     assert items[0].source_type == "pp_structure_text_region"
-    assert items[0].text == "3.4、企业营业执照（扫描件）\n统一社会信用代码\n913302007251641924"
+    assert items[0].text == "3.4、企业营业执照（扫描件）"
     assert items[0].payload["layout_label"] == "paragraph_title"
-    assert items[0].payload["ocr_texts"] == ["3.4、企业营业执照（扫描件）", "统一社会信用代码", "913302007251641924"]
+    assert items[0].payload["ocr_texts"] == ["3.4、企业营业执照（扫描件）"]
     assert items[1].source_type == "pp_structure_image_region"
     assert items[2].source_type == "pp_structure_table_region"
     assert items[3].source_type == "pp_structure_text_region"
+    assert items[3].text == "统一社会信用代码\n913302007251641924"
+    assert all("商务投标文件" not in item.text for item in items)
+
+
+def test_build_pp_structure_page_material_items_skips_unspatial_fallback_text() -> None:
+    pp_result = {
+        "parsing_res_list": [],
+        "layout_det_res": {
+            "boxes": [
+                {"label": "text", "coordinate": [100, 100, 400, 160], "score": 0.8},
+                {"label": "image", "coordinate": [100, 180, 500, 500], "score": 0.9},
+            ]
+        },
+        "overall_ocr_res": {
+            "rec_texts": ["NI.INF 理工能科", "国网甘肃省电力公司 商务投标文件", "法定代表人身份证明"],
+            "rec_scores": [0.98, 0.98, 0.98],
+            "text_type": "general",
+        },
+    }
+
+    items = build_pp_structure_page_material_items(pp_result, page_no=1)
+
+    assert [item.item_type for item in items] == ["image"]
 
 
 def test_build_combined_page_material_stream_includes_pp_structure_items() -> None:
