@@ -418,9 +418,13 @@ def _ordered_material_items(
                 bbox=bbox if item_type != "image" else None,
                 rect=bbox if item_type == "image" else None,
                 text=stream_item.get("text") if item_type == "text" else None,
+                image_title=stream_item.get("image_title") if item_type == "image" else None,
+                file_path=stream_item.get("file_path") if item_type == "image" else None,
+                json_path=stream_item.get("json_path"),
                 nearest_heading=stream_heading,
                 rule_section_path=rule_section_path,
                 material_path=material_path,
+                payload_ref=str(Path(stream_item["json_path"]).relative_to(material_dir)) if stream_item.get("json_path") else stream_item.get("payload_ref"),
                 source_type=stream_item.get("source_type"),
                 payload=stream_item.get("payload") or {},
             ).model_dump(exclude_none=True)
@@ -616,6 +620,15 @@ def _write_material_package(
         )
         if allow_submaterials
         else []
+    )
+    page_material_items = _export_page_material_image_regions(
+        material_dir=material_dir,
+        section_path=section_path,
+        material_path=material_path,
+        nearest_heading=raw_context_title,
+        text_blocks=text_blocks,
+        page_material_items=page_material_items or [],
+        doc=doc,
     )
     ordered = OrderedMaterialPackage(
         material_title=subfolder["folder_title"],
@@ -964,6 +977,8 @@ def _is_compound_child_title(block: PdfTextBlock, rule: dict[str, Any]) -> bool:
     text = re.sub(r"\s+", "", block.text or "")
     if not text:
         return False
+    if text in {"财务报表", "财务会计报表", "审计报告", "财务审计报告"}:
+        return False
     if _text_matches_any_pattern(text, rule.get("instance_title_patterns") or []):
         return False
     if _text_matches_any_pattern(text, rule.get("child_title_exclude_patterns") or []):
@@ -1293,6 +1308,102 @@ def _page_material_item_dict(item: PageMaterialItem | dict[str, Any]) -> dict[st
     if isinstance(item, PageMaterialItem):
         return item.model_dump()
     return dict(item)
+
+
+def _page_material_source_size(item: dict[str, Any]) -> tuple[float | None, float | None]:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    width = payload.get("page_width")
+    height = payload.get("page_height")
+    try:
+        width_value = float(width) if width else None
+    except (TypeError, ValueError):
+        width_value = None
+    try:
+        height_value = float(height) if height else None
+    except (TypeError, ValueError):
+        height_value = None
+    return width_value, height_value
+
+
+def _clip_from_page_material_bbox(fitz_module: Any, page: Any, bbox: list[Any], source_width: float | None, source_height: float | None) -> Any:
+    x0, y0, x1, y1 = [float(value) for value in bbox[:4]]
+    page_width = float(getattr(page.rect, "width", 0.0) or 0.0)
+    page_height = float(getattr(page.rect, "height", 0.0) or 0.0)
+    scale_x = page_width / source_width if source_width else 1.0
+    scale_y = page_height / source_height if source_height else 1.0
+    return fitz_module.Rect(x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y)
+
+
+def _export_page_material_image_regions(
+    *,
+    material_dir: Path,
+    section_path: str,
+    material_path: str,
+    nearest_heading: str,
+    text_blocks: list[PdfTextBlock],
+    page_material_items: list[dict[str, Any]],
+    doc: Any,
+) -> list[dict[str, Any]]:
+    if not page_material_items:
+        return []
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+
+    exported: list[dict[str, Any]] = []
+    decorative_text = _decorative_text_signatures(text_blocks)
+    heading_candidates = build_heading_candidates([_block_dict(block) for block in text_blocks if not _is_decorative_text_block(block, decorative_text)])
+    image_counts: dict[str, int] = {}
+    for item in page_material_items:
+        stream_item = dict(item)
+        if str(stream_item.get("item_type") or stream_item.get("type") or "") != "image":
+            exported.append(stream_item)
+            continue
+        if stream_item.get("file_path"):
+            exported.append(stream_item)
+            continue
+        bbox = stream_item.get("bbox") or []
+        if len(bbox) < 4 or doc is None or fitz is None:
+            exported.append(stream_item)
+            continue
+        page_no = int(stream_item.get("page_no") or 0)
+        top_y = float(stream_item.get("top_y") or bbox[1] or 0.0)
+        nearest = find_nearest_heading(heading_candidates, page_no, top_y)
+        context_title = nearest_heading
+        if nearest:
+            raw_title = str(nearest.get("raw_title") or "")
+            context_title = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
+        clean_context_title = attachment_heading_title(context_title) if str(context_title).strip().startswith("附") else context_title
+        image_counts[clean_context_title] = image_counts.get(clean_context_title, 0) + 1
+        image_title = _sanitize_item_title(clean_context_title, f"图{image_counts[clean_context_title]}")
+        item_dir = ensure_dir(material_dir / "image_items")
+        image_path = item_dir / _item_filename(image_title, "png")
+        try:
+            page = doc.load_page(page_no - 1)
+            source_width, source_height = _page_material_source_size(stream_item)
+            clip = _clip_from_page_material_bbox(fitz, page, bbox, source_width, source_height)
+            pix = page.get_pixmap(clip=clip, alpha=False)
+            pix.save(image_path)
+        except Exception:
+            exported.append(stream_item)
+            continue
+        json_path = item_dir / _item_filename(image_title, "json")
+        stream_item.update(
+            {
+                "image_title": image_title,
+                "context_title": clean_context_title,
+                "nearest_heading": context_title,
+                "rule_section_path": section_path,
+                "material_path": material_path,
+                "file_path": str(image_path),
+                "json_path": str(json_path),
+                "payload_ref": str(json_path.relative_to(material_dir)),
+            }
+        )
+        write_json(json_path, stream_item)
+        exported.append(stream_item)
+    return exported
 
 
 def _page_material_items_for_pages(

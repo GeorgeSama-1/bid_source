@@ -177,6 +177,7 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
     ocr_scores = _ocr_scores(pp_result)
     ocr_boxes = _ocr_boxes(pp_result)
     page_height = pp_result.get("height")
+    page_width = pp_result.get("width")
     try:
         page_height_int = int(page_height) if page_height else None
     except (TypeError, ValueError):
@@ -225,6 +226,8 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                     payload={
                         "layout_label": "image",
                         "score": box.get("score"),
+                        "page_width": page_width,
+                        "page_height": page_height,
                     },
                 )
             )
@@ -245,6 +248,8 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                     payload={
                         "layout_label": "table",
                         "score": box.get("score"),
+                        "page_width": page_width,
+                        "page_height": page_height,
                     },
                 )
             )
@@ -276,6 +281,8 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                         "score": box.get("score"),
                         "ocr_texts": region_texts,
                         "ocr_scores": region_scores,
+                        "page_width": page_width,
+                        "page_height": page_height,
                     },
                 )
             )
