@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import shutil
+import zipfile
+from pathlib import Path
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+
+def _copy_material_files(source_root: Path, package_root: Path) -> int:
+    copied_count = 0
+    for material_md in source_root.rglob("material.md"):
+        relative_path = material_md.relative_to(source_root)
+        target_path = package_root / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(material_md, target_path)
+        copied_count += 1
+    return copied_count
+
+
+def _copy_image_items(source_root: Path, package_root: Path) -> int:
+    copied_count = 0
+    for image_dir in source_root.rglob("image_items"):
+        if not image_dir.is_dir():
+            continue
+        for image_file in image_dir.iterdir():
+            if not image_file.is_file() or image_file.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            relative_path = image_file.relative_to(source_root)
+            target_path = package_root / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(image_file, target_path)
+            copied_count += 1
+    return copied_count
+
+
+def _write_zip(package_root: Path, zip_path: Path) -> None:
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(package_root.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(package_root))
+
+
+def export_lightweight_material_pack(
+    output_dir: str | Path,
+    *,
+    package_dir: str | Path | None = None,
+    zip_path: str | Path | None = None,
+) -> dict[str, str | int]:
+    source_root = Path(output_dir).resolve()
+    modules_dir = source_root / "modules"
+    if not modules_dir.exists():
+        raise FileNotFoundError(f"Cannot find modules directory: {modules_dir}")
+
+    target_package_dir = Path(package_dir).resolve() if package_dir else source_root / "material_pack"
+    target_zip_path = Path(zip_path).resolve() if zip_path else source_root / "material_pack.zip"
+
+    if target_package_dir.exists():
+        shutil.rmtree(target_package_dir)
+    target_package_dir.mkdir(parents=True, exist_ok=True)
+
+    package_modules_dir = target_package_dir / "modules"
+    material_count = _copy_material_files(modules_dir, package_modules_dir)
+    image_count = _copy_image_items(modules_dir, package_modules_dir)
+    _write_zip(target_package_dir, target_zip_path)
+
+    return {
+        "source_dir": str(source_root),
+        "package_dir": str(target_package_dir),
+        "zip_path": str(target_zip_path),
+        "material_count": material_count,
+        "image_count": image_count,
+    }
