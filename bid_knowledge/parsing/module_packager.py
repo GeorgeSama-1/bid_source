@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
@@ -462,6 +463,79 @@ def _dominant_material_type(material_types: list[str]) -> str:
     return "mixed"
 
 
+def _relative_markdown_path(material_dir: Path, path_value: str | None) -> str:
+    if not path_value:
+        return ""
+    path = Path(path_value)
+    try:
+        return str(path.relative_to(material_dir))
+    except ValueError:
+        return str(path)
+
+
+def _render_table_markdown(rows: list[list[Any]]) -> str:
+    if not rows:
+        return ""
+    normalized = [[str(cell or "") for cell in row] for row in rows]
+    width = max(len(row) for row in normalized)
+    padded = [row + [""] * (width - len(row)) for row in normalized]
+    header = padded[0]
+    body = padded[1:]
+    lines = [
+        "| " + " | ".join(header) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in body)
+    return "\n".join(lines)
+
+
+def _load_json_if_exists(material_dir: Path, relative_path: str | None) -> dict[str, Any]:
+    if not relative_path:
+        return {}
+    path = material_dir / relative_path
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_material_markdown(material_dir: Path, material_title: str, ordered_items: list[dict[str, Any]]) -> Path:
+    lines: list[str] = []
+    has_non_image = any(str(item.get("item_type") or item.get("type") or "") != "image" for item in ordered_items)
+    if has_non_image:
+        lines.extend([f"# {material_title}", ""])
+
+    for item in ordered_items:
+        item_type = str(item.get("item_type") or item.get("type") or "")
+        if item_type == "text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                lines.extend([text, ""])
+        elif item_type == "image":
+            image_path = _relative_markdown_path(material_dir, item.get("file_path"))
+            title = str(item.get("image_title") or item.get("nearest_heading") or item.get("image_id") or "图片").strip()
+            if image_path:
+                lines.extend([f"![{title}]({image_path})", ""])
+        elif item_type == "table":
+            table_data = _load_json_if_exists(material_dir, item.get("payload_ref"))
+            table_md = _render_table_markdown(table_data.get("rows") or [])
+            if table_md:
+                lines.extend([table_md, ""])
+            elif item.get("payload_ref"):
+                lines.extend([f"[表格]({item['payload_ref']})", ""])
+        elif item_type == "submaterial" and item.get("payload_ref"):
+            sub_md = str(item["payload_ref"]).replace("ordered_material.json", "material.md")
+            title = str(item.get("nearest_heading") or item.get("material_path") or "子材料").strip()
+            lines.extend([f"[{title}]({sub_md})", ""])
+
+    markdown_path = material_dir / "material.md"
+    markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return markdown_path
+
+
 def _write_material_package(
     material_dir: Path,
     subfolder: dict[str, Any],
@@ -527,6 +601,7 @@ def _write_material_package(
         ],
     )
     write_json(material_dir / "ordered_material.json", ordered)
+    markdown_path = _write_material_markdown(material_dir, subfolder["folder_title"], [item.model_dump(exclude_none=True) for item in ordered.items])
     meta = MaterialMeta(
         material_title=subfolder["folder_title"],
         section_path=section_path,
@@ -555,6 +630,7 @@ def _write_material_package(
         table_item_count=len(table_items),
         image_item_count=len(image_items),
         ordered_item_count=len(ordered.items),
+        material_markdown_path=str(markdown_path.relative_to(material_dir)),
         review_status="pending",
     )
     write_json(material_dir / "material_meta.json", meta)

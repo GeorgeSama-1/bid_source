@@ -1055,6 +1055,48 @@ def test_package_module_artifacts_writes_complete_material_package_for_review_in
     assert ordered["items"][2]["payload_ref"].endswith("json")
     assert ordered["items"][3]["item_type"] == "image"
     assert ordered["items"][3]["payload_ref"].endswith("json")
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    assert "3.8.13.2、供应链保障措施" in material_md
+    assert "供应链保障正文" in material_md
+    assert "![供应链保障措施_图1](image_items/供应链保障措施_图1.png)" in material_md
+    assert meta["material_markdown_path"] == "material.md"
+
+
+def test_package_module_artifacts_writes_image_only_material_markdown_in_order(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人（单位负责人）身份证（扫描件）",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 100, 300, 120], block_no=1),
+    ]
+    images = [
+        {"image_id": "front", "page_no": 1, "xref": 31, "width": 900, "height": 560, "rect": [10, 170, 420, 300], "ext": "png"},
+        {"image_id": "back", "page_no": 1, "xref": 32, "width": 900, "height": 560, "rect": [10, 320, 420, 450], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人（单位负责人）身份证（扫描件）"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    image_lines = [line for line in material_md.splitlines() if line.startswith("![")]
+
+    assert image_lines == [
+        "![法定代表人（单位负责人）身份证（扫描件）_图1](image_items/法定代表人（单位负责人）身份证（扫描件）_图1.png)",
+        "![法定代表人（单位负责人）身份证（扫描件）_图2](image_items/法定代表人（单位负责人）身份证（扫描件）_图2.png)",
+    ]
+    assert "```json" not in material_md
 
 
 def test_package_module_artifacts_packages_compound_financial_reports_by_detected_instances_and_children(tmp_path: Path) -> None:
