@@ -443,6 +443,82 @@ def test_package_module_artifacts_assigns_attachment_stream_image_to_fu_heading(
     assert stream_image["nearest_heading"] == "附：被授权人身份证等有效身份证件（扫描件）"
 
 
+def test_package_module_artifacts_does_not_name_image_from_bid_package_context(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人（单位负责人）身份证（扫描件）",
+            1,
+            1,
+            "测控及在线监测系统）（包号：包05、包06、包07、包08）（包名称：测控及在线监测系统）",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="package-context",
+            page_no=1,
+            text="测控及在线监测系统）（包号：包05、包06、包07、包08）（包名称：测控及在线监测系统）",
+            bbox=[0, 80, 500, 100],
+            block_no=1,
+        ),
+    ]
+    images = [
+        {"image_id": "id-card", "page_no": 1, "xref": 20, "width": 600, "height": 500, "rect": [10, 200, 500, 420], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    image_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人（单位负责人）身份证（扫描件）" / "image_items"
+    exported = sorted(path.name for path in image_dir.glob("*.json"))
+
+    assert exported == ["法定代表人（单位负责人）身份证（扫描件）_图1.json"]
+
+
+def test_package_module_artifacts_scopes_planned_authorization_attachment_to_matching_fu_anchor(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人（单位负责人）身份证（扫描件）",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 100, 300, 120], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="法人身份证文字", bbox=[0, 140, 300, 160], block_no=3),
+        PdfTextBlock(block_id="b4", page_no=1, text="附：被授权人身份证等有效身份证件（扫描件）", bbox=[0, 300, 300, 320], block_no=4),
+        PdfTextBlock(block_id="b5", page_no=1, text="被授权人身份证文字", bbox=[0, 340, 300, 360], block_no=5),
+    ]
+    images = [
+        {"image_id": "legal-id", "page_no": 1, "xref": 21, "width": 600, "height": 500, "rect": [10, 180, 500, 260], "ext": "png"},
+        {"image_id": "agent-id", "page_no": 1, "xref": 22, "width": 600, "height": 500, "rect": [10, 380, 500, 460], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    section_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人（单位负责人）身份证（扫描件）"
+    ordered = json.loads((section_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    dumped = json.dumps(ordered, ensure_ascii=False)
+    exported_images = sorted(path.name for path in (section_dir / "image_items").glob("*.json"))
+
+    assert "被授权人身份证" not in dumped
+    assert exported_images == ["法定代表人（单位负责人）身份证（扫描件）_图1.json"]
+
+
 def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -> None:
     candidates = [
         _candidate(

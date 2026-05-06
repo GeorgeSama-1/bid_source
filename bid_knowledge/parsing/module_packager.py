@@ -129,6 +129,67 @@ def _is_decorative_page_material_text(item: dict[str, Any], signatures: set[str]
     return bool(signature and signature in signatures and _looks_like_page_margin_text(text, bbox))
 
 
+def _is_bid_package_context_title(title: str) -> bool:
+    signature = _text_signature(title)
+    if not signature:
+        return False
+    return any(keyword in signature for keyword in ("包号", "包名称", "商务投标文件", "测控及在线监测系统"))
+
+
+def _fallback_context_title(
+    *,
+    nearest: dict[str, Any] | None,
+    section_candidates: list[ReusableCandidate],
+    page_no: int,
+    path_parts: list[str],
+    default_title: str,
+) -> str:
+    if nearest:
+        title = str(nearest.get("title") or nearest.get("raw_title") or "").strip()
+        if title and not _is_bid_package_context_title(title):
+            return title
+    container_title = _container_title_for_page(section_candidates, page_no)
+    if container_title and not _is_bid_package_context_title(container_title):
+        return container_title
+    if path_parts:
+        return path_parts[-1]
+    return default_title
+
+
+def _attachment_match_key(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", sanitize_display_title(attachment_heading_title(text))).lower()
+
+
+def _is_authorization_attachment_leaf(section_path: str) -> bool:
+    parts = _section_parts(section_path)
+    if len(parts) < 2:
+        return False
+    return parts[0] == "法定代表人授权委托书" and any(keyword in parts[-1] for keyword in ("身份证", "扫描件", "有效身份证件"))
+
+
+def _attachment_scope_for_section(section_path: str, blocks: list[PdfTextBlock]) -> dict[str, Any] | None:
+    if not _is_authorization_attachment_leaf(section_path):
+        return None
+    target = _attachment_match_key(_section_parts(section_path)[-1])
+    anchors = _attachment_anchor_blocks(blocks)
+    for index, anchor in enumerate(anchors):
+        anchor_key = _attachment_match_key(anchor.text)
+        if not anchor_key or not target:
+            continue
+        if anchor_key != target and anchor_key not in target and target not in anchor_key:
+            continue
+        next_anchor = anchors[index + 1] if index + 1 < len(anchors) else None
+        return {
+            "start_page": anchor.page_no,
+            "start_y": _block_top_y(anchor),
+            "end_page": next_anchor.page_no if next_anchor else max([block.page_no for block in blocks], default=anchor.page_no),
+            "end_y": _block_top_y(next_anchor) if next_anchor else None,
+            "start_block_id": anchor.block_id,
+            "end_block_id": next_anchor.block_id if next_anchor else None,
+        }
+    return None
+
+
 def _text_content_from_blocks(blocks: list[PdfTextBlock]) -> str:
     return "\n\n".join(block.text.strip() for block in blocks if block.text and block.text.strip()).strip()
 
@@ -1326,7 +1387,34 @@ def package_module_artifacts(
             module_blocks = [block for block in blocks if block.page_no in pages]
             decorative_text = _decorative_text_signatures(module_blocks)
             module_blocks = [block for block in module_blocks if not _is_decorative_text_block(block, decorative_text)]
+            attachment_scope = _attachment_scope_for_section(section_path, module_blocks)
+            if attachment_scope:
+                module_blocks = [
+                    block
+                    for block in module_blocks
+                    if _item_in_range(
+                        block.page_no,
+                        _block_top_y(block),
+                        int(attachment_scope["start_page"]),
+                        attachment_scope.get("start_y"),
+                        int(attachment_scope["end_page"]),
+                        attachment_scope.get("end_y"),
+                    )
+                ]
             module_tables = [table for table in tables if table.page_no in pages]
+            if attachment_scope:
+                module_tables = [
+                    table
+                    for table in module_tables
+                    if _item_in_range(
+                        table.page_no,
+                        float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                        int(attachment_scope["start_page"]),
+                        attachment_scope.get("start_y"),
+                        int(attachment_scope["end_page"]),
+                        attachment_scope.get("end_y"),
+                    )
+                ]
             module_images = sorted(
                 [
                     image
@@ -1337,7 +1425,28 @@ def package_module_artifacts(
                 ],
                 key=_image_sort_key,
             )
+            if attachment_scope:
+                module_images = [
+                    image
+                    for image in module_images
+                    if _item_in_range(
+                        int(image.get("page_no") or 0),
+                        float((image.get("rect") or [0, 0, 0, 0])[1]),
+                        int(attachment_scope["start_page"]),
+                        attachment_scope.get("start_y"),
+                        int(attachment_scope["end_page"]),
+                        attachment_scope.get("end_y"),
+                    )
+                ]
             module_page_material_items = _page_material_items_for_pages(page_material_items or [], pages)
+            if attachment_scope:
+                module_page_material_items = _page_material_items_in_range(
+                    module_page_material_items,
+                    int(attachment_scope["start_page"]),
+                    attachment_scope.get("start_y"),
+                    int(attachment_scope["end_page"]),
+                    attachment_scope.get("end_y"),
+                )
             heading_candidates = build_heading_candidates([_block_dict(block) for block in module_blocks])
             path_parts = _section_parts(section_path)
 
@@ -1397,7 +1506,13 @@ def package_module_artifacts(
             for table in sorted(module_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])):
                 top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else None
                 nearest = find_nearest_heading(heading_candidates, table.page_no, top_y)
-                context_title = nearest["title"] if nearest else _container_title_for_page(section_candidates, table.page_no) or f"第{table.page_no}页表格"
+                context_title = _fallback_context_title(
+                    nearest=nearest,
+                    section_candidates=section_candidates,
+                    page_no=table.page_no,
+                    path_parts=path_parts,
+                    default_title=f"第{table.page_no}页表格",
+                )
                 table_counts[context_title] = table_counts.get(context_title, 0) + 1
                 table_title = _sanitize_item_title(context_title, f"表{table_counts[context_title]}")
                 subfolder = _subfolder_for_position(section_subfolders, table.page_no, top_y)
@@ -1431,7 +1546,13 @@ def package_module_artifacts(
                 top_y = float(rect[1]) if len(rect) >= 2 else None
                 page_no = int(image.get("page_no") or 0)
                 nearest = find_nearest_heading(heading_candidates, page_no, top_y)
-                context_title = nearest["title"] if nearest else _container_title_for_page(section_candidates, page_no) or f"第{page_no}页图片"
+                context_title = _fallback_context_title(
+                    nearest=nearest,
+                    section_candidates=section_candidates,
+                    page_no=page_no,
+                    path_parts=path_parts,
+                    default_title=f"第{page_no}页图片",
+                )
                 image_counts[context_title] = image_counts.get(context_title, 0) + 1
                 image_title = _sanitize_item_title(context_title, f"图{image_counts[context_title]}")
                 subfolder = _subfolder_for_position(section_subfolders, page_no, top_y)
@@ -1524,6 +1645,7 @@ def package_module_artifacts(
                         image_items=root_image_items,
                         page_material_items=module_page_material_items,
                         image_bytes_resolver=image_bytes_resolver,
+                        allow_submaterials=not _is_authorization_attachment_leaf(section_path),
                     )
                 )
 
