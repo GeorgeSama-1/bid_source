@@ -1167,6 +1167,50 @@ def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_mark
     assert material_md.count("投标保证保险正文") == 1
 
 
+def test_package_module_artifacts_keeps_pp_ocr_text_out_of_material_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 企业营业执照扫描件",
+            1,
+            1,
+            "企业营业执照扫描件",
+        )
+    ]
+    images = [
+        {"image_id": "license", "page_no": 1, "xref": 31, "width": 900, "height": 560, "rect": [10, 170, 420, 300], "ext": "png"},
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-text-license",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=1,
+            top_y=180,
+            bbox=[10, 180, 420, 280],
+            text="营业执照\n统一社会信用代码 913302007251641924",
+            payload={"ocr_texts": ["营业执照", "统一社会信用代码 913302007251641924"]},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"pdf-image", item.get("ext", "png")),
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "企业营业执照扫描件"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert "统一社会信用代码" not in material_md
+    assert "![企业营业执照扫描件_图1](image_items/企业营业执照扫描件_图1.png)" in material_md
+    assert any(item.get("item_id") == "pp-text-license" for item in ordered["items"])
+
+
 def test_package_module_artifacts_writes_authorization_identity_attachment_as_images_only_with_pp_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -1462,6 +1506,86 @@ def test_package_module_artifacts_uses_candidate_container_as_compound_instance(
     assert (base / "3.7.1、2022 年度财务审计报告" / "资产负债表" / "material.md").exists()
     assert not (base / "利润表").exists()
     assert "利润表正文" in (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").read_text(encoding="utf-8")
+
+
+def test_package_module_artifacts_uses_pp_structure_titles_as_financial_instance_headings(tmp_path: Path) -> None:
+    anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
+    candidates = [
+        _candidate(f"{anchor} / 利润表", 12, 22, "财务状况"),
+    ]
+    blocks = [
+        PdfTextBlock(block_id="status-title", page_no=9, text="财务状况", bbox=[0, 80, 200, 95], block_no=1, font_size=16),
+        PdfTextBlock(block_id="profit2022", page_no=12, text="利润表正文", bbox=[0, 130, 200, 150], block_no=2, font_size=10),
+        PdfTextBlock(block_id="profit2023", page_no=22, text="利润表正文", bbox=[0, 130, 200, 150], block_no=3, font_size=10),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-instance-2022",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=10,
+            top_y=80,
+            bbox=[0, 80, 300, 100],
+            text="3.7.1、2022 年度财务审计报告",
+            payload={"layout_label": "doc_title"},
+        ),
+        PageMaterialItem(
+            item_id="pp-child-2022",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=12,
+            top_y=80,
+            bbox=[0, 80, 120, 100],
+            text="利润表",
+            payload={"layout_label": "paragraph_title"},
+        ),
+        PageMaterialItem(
+            item_id="pp-instance-2023",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=20,
+            top_y=80,
+            bbox=[0, 80, 300, 100],
+            text="3.7.2、2023 年度财务审计报告",
+            payload={"layout_label": "doc_title"},
+        ),
+        PageMaterialItem(
+            item_id="pp-child-2023",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=22,
+            top_y=80,
+            bbox=[0, 80, 120, 100],
+            text="利润表",
+            payload={"layout_label": "paragraph_title"},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        compound_material_rules=[
+            {
+                "excel_anchor_path": anchor,
+                "instance_title_patterns": [r"20\d{2}.*(?:财务|审计).*报告"],
+                "auto_detect_children": True,
+                "store_unlisted_children": True,
+            }
+        ],
+        page_material_items=page_material_items,
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
+    anchor_markdown = (base / "material.md").read_text(encoding="utf-8")
+    profit_2022_md = (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").read_text(encoding="utf-8")
+
+    assert "[3.7.1、2022 年度财务审计报告](3.7.1、2022 年度财务审计报告/material.md)" in anchor_markdown
+    assert "[3.7.2、2023 年度财务审计报告](3.7.2、2023 年度财务审计报告/material.md)" in anchor_markdown
+    assert "利润表正文" in profit_2022_md
+    assert "3.7.1、2022 年度财务审计报告" not in profit_2022_md
 
 
 def test_package_module_artifacts_prefers_pdf_embedded_images_over_pp_structure_crops(tmp_path: Path) -> None:

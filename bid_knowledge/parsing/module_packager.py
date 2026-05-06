@@ -216,7 +216,7 @@ def _attachment_scope_for_section(section_path: str, blocks: list[PdfTextBlock])
 
 
 def _text_content_from_blocks(blocks: list[PdfTextBlock]) -> str:
-    return "\n\n".join(block.text.strip() for block in blocks if block.text and block.text.strip()).strip()
+    return "\n\n".join(block.text.strip() for block in blocks if block.source_type != "ocr" and block.text and block.text.strip()).strip()
 
 
 def _write_text_item(
@@ -327,6 +327,8 @@ def _ordered_material_items(
     for block in text_blocks:
         if _is_decorative_text_block(block, decorative_text):
             continue
+        if block.source_type == "ocr":
+            continue
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -340,6 +342,7 @@ def _ordered_material_items(
                 nearest_heading=nearest_heading,
                 rule_section_path=rule_section_path,
                 material_path=material_path,
+                source_type=block.source_type,
                 payload_ref=str(Path(text_item["json_path"]).relative_to(material_dir)) if text_item and text_item.get("json_path") else None,
             ).model_dump(exclude_none=True)
         )
@@ -506,9 +509,26 @@ def _load_json_if_exists(material_dir: Path, relative_path: str | None) -> dict[
     return data if isinstance(data, dict) else {}
 
 
+def _is_ocr_derived_material_text(item: dict[str, Any]) -> bool:
+    source_type = str(item.get("source_type") or "")
+    if source_type == "ocr":
+        return True
+    if source_type.startswith("pp_structure_text"):
+        return True
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    return bool(payload.get("ocr_texts"))
+
+
 def _write_material_markdown(material_dir: Path, material_title: str, ordered_items: list[dict[str, Any]]) -> Path:
     lines: list[str] = []
-    has_non_image = any(str(item.get("item_type") or item.get("type") or "") != "image" for item in ordered_items)
+    has_non_image = any(
+        str(item.get("item_type") or item.get("type") or "") not in {"image", "text"}
+        or (
+            str(item.get("item_type") or item.get("type") or "") == "text"
+            and not _is_ocr_derived_material_text(item)
+        )
+        for item in ordered_items
+    )
     if has_non_image:
         lines.extend([f"# {material_title}", ""])
 
@@ -516,6 +536,8 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
     for item in ordered_items:
         item_type = str(item.get("item_type") or item.get("type") or "")
         if item_type == "text":
+            if _is_ocr_derived_material_text(item):
+                continue
             text = str(item.get("text") or "").strip()
             text_key = re.sub(r"\s+", "", text)
             if text and text_key not in seen_texts:
@@ -1007,6 +1029,8 @@ def _is_compound_child_title(block: PdfTextBlock, rule: dict[str, Any]) -> bool:
         return False
     if block.font_size is not None and float(block.font_size) >= 12:
         return True
+    if block.font_size is not None:
+        return False
     return len(text) <= 12
 
 
@@ -1096,6 +1120,41 @@ def _compound_instances_from_candidate_paths(
     return sorted(normalized, key=lambda item: (int(item["page_start"]), str(item["title"])))
 
 
+def _structure_blocks_from_page_material_items(
+    page_material_items: list[PageMaterialItem | dict[str, Any]] | None,
+    rule: dict[str, Any],
+) -> list[PdfTextBlock]:
+    blocks: list[PdfTextBlock] = []
+    for index, raw_item in enumerate(page_material_items or [], start=1):
+        item = _page_material_item_dict(raw_item)
+        if str(item.get("item_type") or item.get("type") or "") != "text":
+            continue
+        source_type = str(item.get("source_type") or "")
+        if not source_type.startswith("pp_structure_text"):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        layout_label = str(payload.get("layout_label") or "")
+        is_title_like = layout_label in {"doc_title", "paragraph_title", "text"} or _looks_like_compound_instance_title(text, rule)
+        if not is_title_like:
+            continue
+        bbox = [float(value) for value in (item.get("bbox") or [])]
+        blocks.append(
+            PdfTextBlock(
+                block_id=str(item.get("item_id") or f"pp-structure-block-{index}"),
+                page_no=int(item.get("page_no") or 0),
+                text=text,
+                bbox=bbox,
+                block_no=int(item.get("reading_order") or index),
+                source_type="ocr",
+                font_size=16.0 if _looks_like_compound_instance_title(text, rule) else 14.0,
+            )
+        )
+    return sorted(blocks, key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no))
+
+
 def _package_compound_materials(
     rules: list[dict[str, Any]],
     grouped_candidates: dict[str, list[ReusableCandidate]],
@@ -1107,6 +1166,7 @@ def _package_compound_materials(
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
     doc: Any,
     decorative_signatures: set[tuple[Any, ...]],
+    page_material_items: list[PageMaterialItem | dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     manifests: list[dict[str, Any]] = []
     for rule in rules:
@@ -1117,12 +1177,22 @@ def _package_compound_materials(
 
         anchor_dir = ensure_dir(modules_dir.joinpath(*_section_dirnames([anchor_path])[anchor_path]))
         anchor_candidates = [candidate for path in child_paths for candidate in grouped_candidates.get(path, [])]
-        pages = sorted({page for candidate in anchor_candidates for page in _page_numbers(candidate)})
+        structure_blocks = _structure_blocks_from_page_material_items(page_material_items, rule)
+        instance_structure_pages = {
+            block.page_no
+            for block in structure_blocks
+            if _looks_like_compound_instance_title(block.text, rule)
+        }
+        pages = sorted({page for candidate in anchor_candidates for page in _page_numbers(candidate)} | instance_structure_pages)
         if not pages:
             continue
 
         page_set = set(pages)
         scoped_blocks = [block for block in blocks if block.page_no in page_set]
+        scoped_structure_blocks = sorted(
+            scoped_blocks + [block for block in structure_blocks if block.page_no in page_set],
+            key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no),
+        )
         scoped_tables = [table for table in tables if table.page_no in page_set]
         scoped_images = sorted(
             [
@@ -1276,7 +1346,7 @@ def _package_compound_materials(
         instance_blocks = sorted(
             [
                 block
-                for block in scoped_blocks
+                for block in scoped_structure_blocks
                 if _text_matches_any_pattern(re.sub(r"\s+", "", block.text or ""), rule["instance_title_patterns"])
             ],
             key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no),
@@ -1290,6 +1360,11 @@ def _package_compound_materials(
             start_y = _block_top_y(instance)
             end_page = next_instance.page_no if next_instance else max(pages)
             end_y = _block_top_y(next_instance) if next_instance else None
+            instance_structure_blocks_in_range = [
+                block
+                for block in scoped_structure_blocks
+                if _item_in_range(block.page_no, _block_top_y(block), start_page, start_y, end_page, end_y)
+            ]
             instance_blocks_in_range = [
                 block
                 for block in scoped_blocks
@@ -1298,7 +1373,7 @@ def _package_compound_materials(
             child_title_blocks = sorted(
                 [
                     block
-                    for block in instance_blocks_in_range
+                    for block in instance_structure_blocks_in_range
                     if block.block_id != instance.block_id and _is_compound_child_title(block, rule)
                 ],
                 key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no),
@@ -1849,6 +1924,7 @@ def package_module_artifacts(
             image_bytes_resolver=image_bytes_resolver,
             doc=doc,
             decorative_signatures=decorative_signatures,
+            page_material_items=page_material_items,
         )
         generated_compound_anchors = {
             str(manifest.get("excel_anchor_path") or "")
