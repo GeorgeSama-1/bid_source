@@ -120,7 +120,8 @@ def test_match_sections_falls_back_to_block_search_when_title_not_in_toc() -> No
 
     assert results[0].matched is True
     assert results[0].matched_page_no == 834
-    assert results[0].matched_page_end == 835
+    assert results[0].matched_page_end == 834
+    assert results[0].matched_container_page_end == 835
     assert "法定代表人" in (results[0].matched_title or "")
     assert "block" in results[0].match_reason
 
@@ -173,7 +174,8 @@ def test_match_sections_prefers_stronger_block_hit_over_weak_section_hit() -> No
     assert results[0].matched is True
     assert results[0].matched_source_type == "text_block"
     assert results[0].matched_page_no == 834
-    assert results[0].matched_page_end == 835
+    assert results[0].matched_page_end == 834
+    assert results[0].matched_container_page_end == 835
 
 
 def test_match_sections_attachment_ignores_non_scan_identity_text() -> None:
@@ -462,3 +464,44 @@ def test_match_sections_scopes_authorization_child_to_parent_section() -> None:
     assert results[0].matched_page_no == 835
     assert results[0].matched_container_title == "法定代表人授权委托书"
     assert all(item.get("matched_page_no") != 22 for item in results[0].related_matches)
+
+
+def test_text_block_match_does_not_inherit_large_container_page_end() -> None:
+    rule = make_rule(
+        rule_id="rule-block-anchor",
+        module_name="补充文件",
+        sub_content_1="中国质量奖",
+        sub_content_2="",
+        sub_content_3="",
+        section_path="商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 二、高质量发展评价 / 中国质量奖",
+    )
+    sections = [
+        ReconstructedSection(
+            section_id="sec-large-parent",
+            title="二、高质量发展评价",
+            normalized_title="二高质量发展评价",
+            level=2,
+            page_start=574,
+            page_end=835,
+            block_start_id="b-parent-1",
+            block_end_id="b-parent-9",
+            source_type="toc",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="b-award",
+            page_no=810,
+            text="3.8.15、中国质量奖（无）",
+            bbox=[0, 120, 300, 140],
+            block_no=1,
+        )
+    ]
+
+    results = match_sections([rule], sections, plan=make_plan(rule.rule_id), blocks=blocks)
+
+    assert results[0].matched is True
+    assert results[0].matched_source_type == "text_block"
+    assert results[0].matched_page_no == 810
+    assert results[0].matched_page_end == 810
+    assert results[0].matched_container_page_end == 835

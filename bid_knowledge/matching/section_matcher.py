@@ -200,7 +200,7 @@ def _collect_block_matches(
                     "matched_section_id": f"block::{block.block_id}",
                     "matched_title": line,
                     "matched_page_no": block.page_no,
-                    "matched_page_end": direct_section.page_end if direct_section else block.page_no,
+                    "matched_page_end": block.page_no,
                     "matched_container_section_id": container.section_id if container else None,
                     "matched_container_title": container.title if container else None,
                     "matched_container_page_no": container.page_start if container else None,

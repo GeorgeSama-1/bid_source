@@ -84,6 +84,51 @@ def _block_top_y(block: PdfTextBlock) -> float | None:
     return float(block.bbox[1]) if block.bbox and len(block.bbox) >= 2 else None
 
 
+def _text_signature(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _looks_like_page_margin_text(text: str, bbox: list[float] | None) -> bool:
+    signature = _text_signature(text)
+    if not signature:
+        return False
+    top = float(bbox[1]) if bbox and len(bbox) >= 2 else 0.0
+    bottom = float(bbox[3]) if bbox and len(bbox) >= 4 else top
+    if "商务投标文件" in signature and top <= 120:
+        return True
+    if re.fullmatch(r"\d+", signature) and (top <= 80 or bottom >= 760):
+        return True
+    return top <= 70 or bottom >= 760
+
+
+def _decorative_text_signatures(blocks: list[PdfTextBlock]) -> set[str]:
+    pages_by_signature: dict[str, set[int]] = defaultdict(set)
+    for block in blocks:
+        signature = _text_signature(block.text)
+        if not signature or not _looks_like_page_margin_text(block.text, block.bbox):
+            continue
+        pages_by_signature[signature].add(block.page_no)
+    return {signature for signature, pages in pages_by_signature.items() if len(pages) >= 2 or "商务投标文件" in signature}
+
+
+def _is_decorative_text_block(block: PdfTextBlock, signatures: set[str]) -> bool:
+    signature = _text_signature(block.text)
+    return bool(signature and signature in signatures and _looks_like_page_margin_text(block.text, block.bbox))
+
+
+def _is_decorative_page_material_text(item: dict[str, Any], signatures: set[str]) -> bool:
+    if str(item.get("item_type") or item.get("type") or "") != "text":
+        return False
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    layout_label = str(payload.get("layout_label") or "")
+    if layout_label in {"header", "header_image", "footer", "footer_image", "number", "footnote"}:
+        return True
+    text = str(item.get("text") or "")
+    bbox = item.get("bbox") or []
+    signature = _text_signature(text)
+    return bool(signature and signature in signatures and _looks_like_page_margin_text(text, bbox))
+
+
 def _text_content_from_blocks(blocks: list[PdfTextBlock]) -> str:
     return "\n\n".join(block.text.strip() for block in blocks if block.text and block.text.strip()).strip()
 
@@ -191,7 +236,10 @@ def _ordered_material_items(
     page_material_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
+    decorative_text = _decorative_text_signatures(text_blocks)
     for block in text_blocks:
+        if _is_decorative_text_block(block, decorative_text):
+            continue
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -262,6 +310,8 @@ def _ordered_material_items(
     for stream_item in page_material_items or []:
         item_type = str(stream_item.get("item_type") or stream_item.get("type") or "")
         if item_type not in {"text", "table", "image"}:
+            continue
+        if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
         bbox = stream_item.get("bbox") or []
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
@@ -1267,6 +1317,8 @@ def package_module_artifacts(
                 section_pages.update(range(int(subfolder["page_start"]), int(subfolder["page_end"]) + 1))
             pages = sorted(section_pages)
             module_blocks = [block for block in blocks if block.page_no in pages]
+            decorative_text = _decorative_text_signatures(module_blocks)
+            module_blocks = [block for block in module_blocks if not _is_decorative_text_block(block, decorative_text)]
             module_tables = [table for table in tables if table.page_no in pages]
             module_images = sorted(
                 [

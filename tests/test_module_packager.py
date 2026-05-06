@@ -267,6 +267,68 @@ def test_package_module_artifacts_filters_repeated_header_logo_images(tmp_path: 
     assert len(exported) == 1
 
 
+def test_package_module_artifacts_filters_repeated_page_header_text(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）",
+            22,
+            23,
+            "3.4、企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）",
+        )
+    ]
+    header = "国网甘肃省电力公司【测控及在线监测系统】包05、包06、包07、包08——商务投标文件"
+    blocks = [
+        PdfTextBlock(block_id="h22", page_no=22, text=header, bbox=[824, 23, 1666, 48], block_no=1),
+        PdfTextBlock(block_id="b22", page_no=22, text="企业营业执照副本", bbox=[700, 140, 950, 163], block_no=2),
+        PdfTextBlock(block_id="h23", page_no=23, text=header, bbox=[824, 23, 1666, 48], block_no=1),
+        PdfTextBlock(block_id="b23", page_no=23, text="统一社会信用代码 913302007251641924", bbox=[180, 240, 900, 260], block_no=2),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-header-22",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=22,
+            top_y=23,
+            bbox=[824, 23, 1666, 48],
+            text=header,
+            payload={"layout_label": "header"},
+        ),
+        PageMaterialItem(
+            item_id="pp-body-22",
+            item_type="text",
+            source_type="pp_structure_text_region",
+            page_no=22,
+            top_y=140,
+            bbox=[700, 140, 950, 163],
+            text="企业营业执照副本",
+            payload={"layout_label": "text"},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    ordered_path = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "企业营业执照（或事业单位法人证书或其他组织登记证书）（扫描件）"
+        / "ordered_material.json"
+    )
+    ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
+    dumped = json.dumps(ordered, ensure_ascii=False)
+
+    assert header not in dumped
+    assert "企业营业执照副本" in dumped
+
+
 def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -> None:
     candidates = [
         _candidate(
