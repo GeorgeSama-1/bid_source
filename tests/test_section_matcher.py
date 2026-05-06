@@ -298,3 +298,108 @@ def test_match_sections_prefers_body_match_and_keeps_multiple_instances() -> Non
     assert "企业名称变更原因说明" in str(results[0].matched_container_title)
     assert any("2007年企业名称变更证明材料" in str(item.get("matched_title", "")) for item in results[0].related_matches + [{"matched_title": results[0].matched_title}])
     assert any("2015年企业名称变更证明材料" in str(item.get("matched_title", "")) for item in results[0].related_matches + [{"matched_title": results[0].matched_title}])
+
+
+def test_match_sections_ignores_directory_page_text_block_hits() -> None:
+    rule = make_rule(
+        rule_id="rule-directory",
+        module_name="投标人与国家电网公司系统人员关系说明",
+        sub_content_1="",
+        sub_content_2="",
+        sub_content_3="",
+        section_path="商务文件 / 投标人与国家电网公司系统人员关系说明",
+    )
+    sections = [
+        ReconstructedSection(
+            section_id="sec-real",
+            title="投标人与国家电网公司系统人员关系说明",
+            normalized_title="投标人与国家电网公司系统人员关系说明",
+            level=1,
+            page_start=45,
+            page_end=46,
+            block_start_id="b-real-1",
+            block_end_id="b-real-9",
+            source_type="heuristic",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="toc-title", page_no=3, text="目录", bbox=[0, 10, 100, 30], block_no=1),
+        PdfTextBlock(
+            block_id="toc-hit",
+            page_no=3,
+            text="投标人与国家电网公司系统人员关系说明 ........ 45",
+            bbox=[0, 50, 300, 70],
+            block_no=2,
+        ),
+        PdfTextBlock(
+            block_id="body-hit",
+            page_no=45,
+            text="投标人与国家电网公司系统人员关系说明",
+            bbox=[0, 50, 300, 70],
+            block_no=3,
+        ),
+    ]
+
+    results = match_sections([rule], sections, plan=make_plan(rule.rule_id), blocks=blocks)
+
+    assert results[0].matched is True
+    assert results[0].matched_page_no == 45
+    assert results[0].matched_source_type == "section"
+    assert all(item.get("matched_page_no") != 3 for item in results[0].related_matches)
+
+
+def test_match_sections_prefers_authorization_title_over_business_license_role_text() -> None:
+    rule = make_rule(
+        rule_id="rule-auth",
+        module_name="法定代表人授权委托书",
+        sub_content_1="",
+        sub_content_2="",
+        sub_content_3="",
+        section_path="商务文件 / 法定代表人授权委托书",
+    )
+    sections = [
+        ReconstructedSection(
+            section_id="sec-business-license",
+            title="企业营业执照扫描件",
+            normalized_title="企业营业执照扫描件",
+            level=1,
+            page_start=22,
+            page_end=23,
+            block_start_id="b-license-1",
+            block_end_id="b-license-9",
+            source_type="toc",
+        ),
+        ReconstructedSection(
+            section_id="sec-auth",
+            title="法定代表人授权委托书",
+            normalized_title="法定代表人授权委托书",
+            level=1,
+            page_start=834,
+            page_end=835,
+            block_start_id="b-auth-1",
+            block_end_id="b-auth-9",
+            source_type="toc",
+        ),
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="license-role",
+            page_no=22,
+            text="法定代表人 周方洁\n国家企业信用信息公示系统网址：http://www.gsxl.gov.cn",
+            bbox=[0, 300, 500, 340],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="auth-title",
+            page_no=834,
+            text="4、法定代表人授权委托书",
+            bbox=[0, 50, 500, 80],
+            block_no=2,
+        ),
+    ]
+
+    results = match_sections([rule], sections, plan=make_plan(rule.rule_id), blocks=blocks)
+
+    assert results[0].matched is True
+    assert results[0].matched_page_no == 834
+    assert results[0].matched_title == "法定代表人授权委托书"

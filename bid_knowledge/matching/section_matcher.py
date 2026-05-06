@@ -129,9 +129,28 @@ def _find_block_match(rule_title: str, blocks: list[PdfTextBlock]) -> tuple[floa
     return best_score, best_reason, best_block, best_line
 
 
+def _directory_like_pages(blocks: list[PdfTextBlock]) -> set[int]:
+    pages: set[int] = set()
+    by_page: dict[int, list[PdfTextBlock]] = {}
+    for block in blocks:
+        by_page.setdefault(block.page_no, []).append(block)
+    for page_no, page_blocks in by_page.items():
+        if page_no > 20:
+            continue
+        normalized_lines = [re.sub(r"\s+", "", block.text or "") for block in page_blocks]
+        has_directory_title = any(line in {"目录", "目次", "目录页"} for line in normalized_lines)
+        has_directory_rows = sum(1 for line in normalized_lines if re.search(r"\.{2,}|…{2,}|第?\d+页?$", line))
+        if has_directory_title or has_directory_rows >= 3:
+            pages.add(page_no)
+    return pages
+
+
 def _collect_block_matches(rule_title: str, blocks: list[PdfTextBlock], sections: list[ReconstructedSection]) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
+    directory_pages = _directory_like_pages(blocks)
     for block in blocks:
+        if block.page_no in directory_pages:
+            continue
         for line in (part.strip() for part in block.text.splitlines() if part.strip()):
             score, reason = _score_block_line(rule_title, line)
             if score < 0.6:
