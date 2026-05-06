@@ -536,6 +536,46 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
     return markdown_path
 
 
+def _write_material_index_markdown(
+    material_dir: Path,
+    title: str,
+    entries: list[tuple[str, Path]],
+) -> Path:
+    lines = [f"# {title}", ""]
+    if entries:
+        for entry_title, target_path in entries:
+            lines.append(f"- [{entry_title}]({_relative_markdown_path(material_dir, target_path)})")
+    else:
+        lines.append("暂无可直接复用内容。")
+
+    markdown_path = material_dir / "material.md"
+    markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return markdown_path
+
+
+def _backfill_missing_material_indexes(root_dir: Path) -> None:
+    skip_names = {"text_items", "table_items", "image_items", "original"}
+    directories = sorted(
+        [path for path in root_dir.rglob("*") if path.is_dir() and path.name not in skip_names],
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for directory in directories:
+        if (directory / "material.md").exists():
+            continue
+        child_entries = [
+            (child.name, child / "material.md")
+            for child in sorted(directory.iterdir(), key=lambda item: item.name)
+            if child.is_dir() and (child / "material.md").exists()
+        ]
+        has_metadata = any(
+            (directory / filename).exists()
+            for filename in ("module_meta.json", "section_meta.json", "compound_instance_meta.json", "compound_materials_manifest.json")
+        )
+        if child_entries or has_metadata:
+            _write_material_index_markdown(directory, directory.name, child_entries)
+
+
 def _write_material_package(
     material_dir: Path,
     subfolder: dict[str, Any],
@@ -1004,6 +1044,7 @@ def _package_compound_materials(
             "instance_count": 0,
             "instances": [],
         }
+        instance_markdown_entries: list[tuple[str, Path]] = []
         for index, instance in enumerate(instance_blocks):
             next_instance = instance_blocks[index + 1] if index + 1 < len(instance_blocks) else None
             start_page = instance.page_no
@@ -1029,6 +1070,7 @@ def _package_compound_materials(
             instance_title = sanitize_asset_name(instance.text).strip() or "未命名主体"
             instance_dir = ensure_dir(anchor_dir / _safe_dirname(instance_title))
             children_meta: list[dict[str, Any]] = []
+            child_markdown_entries: list[tuple[str, Path]] = []
             for child_index, child in enumerate(child_title_blocks):
                 next_child = child_title_blocks[child_index + 1] if child_index + 1 < len(child_title_blocks) else None
                 child_start_page = child.page_no
@@ -1127,31 +1169,32 @@ def _package_compound_materials(
                     write_json(json_path, item)
                     image_items.append(item)
 
-                children_meta.append(
-                    _write_material_package(
-                        material_dir=child_dir,
-                        subfolder={
-                            "folder_title": child_title,
-                            "page_start": child_start_page,
-                            "page_end": child_end_page,
-                            "start_y": child_start_y,
-                            "end_y": child_end_y,
-                            "start_block_id": child.block_id,
-                            "end_block_id": next_child.block_id if next_child else (next_instance.block_id if next_instance else None),
-                        },
-                        section_path=anchor_path,
-                        path_parts=path_parts,
-                        pdf_path=pdf_path,
-                        doc=doc,
-                        text_blocks=child_blocks,
-                        text_item=text_item,
-                        table_items=table_items,
-                        image_items=image_items,
-                        image_bytes_resolver=image_bytes_resolver,
-                        allow_submaterials=False,
-                    )
+                child_meta = _write_material_package(
+                    material_dir=child_dir,
+                    subfolder={
+                        "folder_title": child_title,
+                        "page_start": child_start_page,
+                        "page_end": child_end_page,
+                        "start_y": child_start_y,
+                        "end_y": child_end_y,
+                        "start_block_id": child.block_id,
+                        "end_block_id": next_child.block_id if next_child else (next_instance.block_id if next_instance else None),
+                    },
+                    section_path=anchor_path,
+                    path_parts=path_parts,
+                    pdf_path=pdf_path,
+                    doc=doc,
+                    text_blocks=child_blocks,
+                    text_item=text_item,
+                    table_items=table_items,
+                    image_items=image_items,
+                    image_bytes_resolver=image_bytes_resolver,
+                    allow_submaterials=False,
                 )
+                children_meta.append(child_meta)
+                child_markdown_entries.append((child_title, child_dir / "material.md"))
 
+            instance_markdown_path = _write_material_index_markdown(instance_dir, instance_title, child_markdown_entries)
             instance_meta = CompoundInstanceMeta(
                 material_type="compound_instance",
                 excel_anchor_path=anchor_path,
@@ -1165,11 +1208,18 @@ def _package_compound_materials(
                 child_count=len(children_meta),
                 children=[MaterialMeta(**child) for child in children_meta],
                 review_status="pending",
+                material_markdown_path=str(instance_markdown_path.relative_to(instance_dir)),
             )
             write_json(instance_dir / "compound_instance_meta.json", instance_meta)
             anchor_manifest["instances"].append(instance_meta)
+            instance_markdown_entries.append((instance_title, instance_dir / "material.md"))
 
         anchor_manifest["instance_count"] = len(anchor_manifest["instances"])
+        anchor_manifest["material_markdown_path"] = str(_write_material_index_markdown(
+            anchor_dir,
+            _section_parts(anchor_path)[-1] if _section_parts(anchor_path) else anchor_path,
+            instance_markdown_entries,
+        ).relative_to(anchor_dir))
         write_json(anchor_dir / "compound_materials_manifest.json", anchor_manifest)
         manifests.append(anchor_manifest)
     return manifests
@@ -1561,6 +1611,7 @@ def package_module_artifacts(
                     "candidate_count": len(section_candidates),
                     "has_standard_template": any(candidate.has_standard_template for candidate in section_candidates),
                     "is_empty_placeholder": not bool(section_candidates),
+                    "section_markdown_path": "material.md",
                 },
             )
             write_json(section_dir / "candidates.json", section_candidates)
@@ -1687,31 +1738,32 @@ def package_module_artifacts(
                     image_items_by_folder[str(subfolder["folder_title"])].append({**item, "_top_y": top_y or 0.0})
 
             material_index: list[dict[str, Any]] = []
+            material_markdown_entries: list[tuple[str, Path]] = []
             for subfolder in section_subfolders:
                 folder_title = str(subfolder["folder_title"])
                 material_dir = ensure_dir(section_dir / _safe_dirname(folder_title))
-                material_index.append(
-                    _write_material_package(
-                        material_dir=material_dir,
-                        subfolder=subfolder,
-                        section_path=section_path,
-                        path_parts=path_parts,
-                        pdf_path=pdf_path,
-                        doc=doc,
-                        text_blocks=text_blocks_by_folder.get(folder_title, []),
-                        text_item=text_items_by_folder.get(folder_title),
-                        table_items=table_items_by_folder.get(folder_title, []),
-                        image_items=image_items_by_folder.get(folder_title, []),
-                        page_material_items=_page_material_items_in_range(
-                            module_page_material_items,
-                            int(subfolder["page_start"]),
-                            subfolder.get("start_y"),
-                            int(subfolder["page_end"]),
-                            subfolder.get("end_y"),
-                        ),
-                        image_bytes_resolver=image_bytes_resolver,
-                    )
+                material_meta = _write_material_package(
+                    material_dir=material_dir,
+                    subfolder=subfolder,
+                    section_path=section_path,
+                    path_parts=path_parts,
+                    pdf_path=pdf_path,
+                    doc=doc,
+                    text_blocks=text_blocks_by_folder.get(folder_title, []),
+                    text_item=text_items_by_folder.get(folder_title),
+                    table_items=table_items_by_folder.get(folder_title, []),
+                    image_items=image_items_by_folder.get(folder_title, []),
+                    page_material_items=_page_material_items_in_range(
+                        module_page_material_items,
+                        int(subfolder["page_start"]),
+                        subfolder.get("start_y"),
+                        int(subfolder["page_end"]),
+                        subfolder.get("end_y"),
+                    ),
+                    image_bytes_resolver=image_bytes_resolver,
                 )
+                material_index.append(material_meta)
+                material_markdown_entries.append((folder_title, material_dir / "material.md"))
 
             if not section_subfolders and section_candidates:
                 root_folder_title = path_parts[-1] if path_parts else section_path
@@ -1750,6 +1802,10 @@ def package_module_artifacts(
                         allow_submaterials=not _is_authorization_attachment_leaf(section_path),
                     )
                 )
+            elif section_subfolders:
+                _write_material_index_markdown(section_dir, path_parts[-1] if path_parts else section_path, material_markdown_entries)
+            else:
+                _write_material_index_markdown(section_dir, path_parts[-1] if path_parts else section_path, [])
 
             write_json(section_dir / "tables.json", tables_index)
             write_json(section_dir / "images.json", images_index)
@@ -1779,5 +1835,6 @@ def package_module_artifacts(
         if doc is not None:
             doc.close()
 
+    _backfill_missing_material_indexes(modules_dir)
     write_json(root / "global" / "modules_manifest.json", global_manifest)
     return global_manifest

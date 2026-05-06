@@ -214,6 +214,17 @@ def test_package_module_artifacts_precreates_empty_history_tree_dirs(tmp_path: P
         / "被授权人身份证等有效身份证件（扫描件）"
         / "section_meta.json"
     ).exists()
+    empty_material_md = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "“商务评分标准”涉及的支撑材料"
+        / "一、履约能力评价"
+        / "经营状况"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    assert empty_material_md.startswith("# 经营状况")
+    assert "暂无可直接复用内容" in empty_material_md
 
 
 def test_package_module_artifacts_filters_repeated_header_logo_images(tmp_path: Path) -> None:
@@ -662,6 +673,10 @@ def test_package_module_artifacts_creates_review_index_subfolders(tmp_path: Path
     assert (sub_1 / "image_items" / "绩效评价结果查询_图1.json").exists()
     assert (sub_2 / "table_items" / "企业发展稳健_表1.json").exists()
     assert (sub_2 / "image_items" / "企业发展稳健_图1.json").exists()
+    parent_markdown = (base / "material.md").read_text(encoding="utf-8")
+    assert parent_markdown.startswith("# 经营状况")
+    assert "[3.8.1.1、企业履约能力强](3.8.1.1、企业履约能力强/material.md)" in parent_markdown
+    assert "[3.8.1.2、企业整体经营状况优良](3.8.1.2、企业整体经营状况优良/material.md)" in parent_markdown
 
 
 def test_package_module_artifacts_expands_pages_using_review_index_ranges(tmp_path: Path) -> None:
@@ -1144,6 +1159,14 @@ def test_package_module_artifacts_packages_compound_financial_reports_by_detecte
 
     base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
     instance_meta = json.loads((base / "2022年度财务报表" / "compound_instance_meta.json").read_text(encoding="utf-8"))
+    anchor_markdown = (base / "material.md").read_text(encoding="utf-8")
+    instance_markdown = (base / "2022年度财务报表" / "material.md").read_text(encoding="utf-8")
+    assert anchor_markdown.startswith("# 经会计师事务所或审计机构审计的财务会计报表")
+    assert "[2022年度财务报表](2022年度财务报表/material.md)" in anchor_markdown
+    assert "[2023年度财务报表](2023年度财务报表/material.md)" in anchor_markdown
+    assert instance_markdown.startswith("# 2022年度财务报表")
+    assert "[目录](目录/material.md)" in instance_markdown
+    assert "[利润表](利润表/material.md)" in instance_markdown
     assert (base / "2022年度财务报表" / "目录" / "image_items" / "目录_图1.json").exists()
     assert (base / "2022年度财务报表" / "利润表" / "image_items" / "利润表_图1.json").exists()
     assert (base / "2022年度财务报表" / "财务报表附注" / "image_items" / "财务报表附注_图1.json").exists()
