@@ -22,6 +22,11 @@ from bid_knowledge.parsing.pdf_parser import parse_pdf, render_pdf_pages
 from bid_knowledge.parsing.pp_structure import run_pp_structure
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
+from bid_knowledge.parsing.toc_leaf_builder import (
+    build_toc_leaf_candidates,
+    toc_leaf_section_paths,
+    top_level_modules_from_toc_candidates,
+)
 from bid_knowledge.retrieval.bm25_retriever import BM25Retriever, load_chunks
 from bid_knowledge.retrieval.retrieval_eval import evaluate_retrieval
 from bid_knowledge.retrieval.vector_retriever import VectorRetriever
@@ -139,6 +144,14 @@ def _build_page_material_stream_payload(
             pp_structure_results=pp_structure_results,
         )
     ]
+
+
+def _document_page_count(parsed: dict[str, Any]) -> int:
+    meta = parsed.get("document_meta") if isinstance(parsed, dict) else {}
+    try:
+        return int((meta or {}).get("page_count") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _top_level_modules_from_plan(plan: ProcessingPlan) -> list[str]:
@@ -378,6 +391,98 @@ def package_materials_command(
         compound_material_rules=manual.compound_material_rules if manual and manual.compound_material_rules else None,
     )
     typer.echo(f"Packaged {len(manifest.get('sections', []))} sections -> {out_dir}")
+
+
+@app.command("pdf-toc-pipeline")
+def pdf_toc_pipeline_command(
+    pdf: str = typer.Option(..., "--pdf"),
+    out_dir: str = typer.Option(..., "--out-dir"),
+    path_root: str = typer.Option("PDF", "--path-root"),
+    enable_pp_structure: str = typer.Option("false", "--enable-pp-structure"),
+    pp_structure_device: str = typer.Option("gpu", "--pp-structure-device"),
+    pp_structure_use_doc_orientation_classify: str = typer.Option("false", "--pp-structure-use-doc-orientation-classify"),
+    pp_structure_use_doc_unwarping: str = typer.Option("false", "--pp-structure-use-doc-unwarping"),
+    pp_structure_use_textline_orientation: str = typer.Option("false", "--pp-structure-use-textline-orientation"),
+    progress: str = typer.Option("true", "--progress"),
+) -> None:
+    pp_structure_enabled = _parse_bool_flag(enable_pp_structure)
+    show_progress = _parse_bool_flag(progress)
+    total_steps = 6
+    root = ensure_dir(out_dir)
+    parsed_dir = ensure_dir(root / "parsed")
+    candidates_dir = ensure_dir(root / "candidates")
+    ensure_dir(root / "modules")
+
+    _pipeline_echo(1, total_steps, "Parsing PDF text, images, and TOC")
+    with _make_progress_callback(show_progress, "Parsing PDF pages") as progress_callback:
+        parsed = parse_pdf(pdf, plan=None, out_dir=parsed_dir, progress_callback=progress_callback)
+
+    toc = list(parsed.get("toc") or [])
+    page_count = _document_page_count(parsed)
+    if not toc:
+        raise typer.BadParameter("当前 PDF 没有可用目录，无法按目录叶子章节展开。")
+
+    _pipeline_echo(2, total_steps, "Extracting tables")
+    with _make_progress_callback(show_progress, "Extracting tables") as progress_callback:
+        tables = extract_tables(pdf, plan=None, out_path=parsed_dir / "tables.json", progress_callback=progress_callback)
+
+    pp_structure_results: list[dict[str, Any]] = []
+    if pp_structure_enabled:
+        _pipeline_echo(3, total_steps, "Running PP-StructureV3 for positioning")
+        with _make_progress_callback(show_progress, "Running PP-StructureV3") as progress_callback:
+            pp_structure_results = run_pp_structure(
+                pdf,
+                out_path=parsed_dir / "pp_structure_results.json",
+                device=pp_structure_device,
+                use_doc_orientation_classify=_parse_bool_flag(pp_structure_use_doc_orientation_classify),
+                use_doc_unwarping=_parse_bool_flag(pp_structure_use_doc_unwarping),
+                use_textline_orientation=_parse_bool_flag(pp_structure_use_textline_orientation),
+                progress_callback=progress_callback,
+            )
+    else:
+        _pipeline_echo(3, total_steps, "PP-StructureV3 disabled; using PDF-native positioning only")
+        write_json(parsed_dir / "pp_structure_results.json", [])
+
+    _pipeline_echo(4, total_steps, "Building TOC leaf sections")
+    candidates = build_toc_leaf_candidates(
+        toc=toc,
+        page_count=page_count,
+        path_root=path_root,
+        company_id="pdf",
+        document_id=Path(pdf).stem,
+    )
+    for candidate in candidates:
+        candidate.source_file = str(pdf)
+    write_json(candidates_dir / "toc_leaf_candidates.json", candidates)
+    planned_paths = toc_leaf_section_paths(candidates)
+    write_json(candidates_dir / "toc_leaf_section_paths.json", planned_paths)
+
+    _pipeline_echo(5, total_steps, "Building page material stream")
+    blocks = _load_blocks(parsed_dir / "text_blocks.json")
+    images = _load_images(parsed_dir / "images.json")
+    page_material_stream = _build_page_material_stream_payload(
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        pp_structure_results=pp_structure_results,
+    )
+    write_json(parsed_dir / "page_material_stream.json", page_material_stream)
+
+    _pipeline_echo(6, total_steps, "Packaging TOC leaf materials")
+    manifest = package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=root,
+        pdf_path=pdf,
+        top_level_modules=top_level_modules_from_toc_candidates(candidates),
+        planned_section_paths=planned_paths,
+        compound_material_rules=[],
+        page_material_items=page_material_stream,
+    )
+    write_json(root / "pdf_toc_pipeline_manifest.json", manifest)
+    typer.echo(f"PDF TOC pipeline completed -> {root}")
 
 
 @app.command("build-chunks")
