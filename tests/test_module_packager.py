@@ -280,6 +280,52 @@ def test_package_module_artifacts_filters_repeated_header_logo_images(tmp_path: 
     assert len(exported) == 1
 
 
+def test_package_module_artifacts_filters_items_inside_pp_layout_masks(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业名称变更",
+            1,
+            1,
+            "企业名称变更",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="header", page_no=1, text="国网甘肃省电力公司 商务投标文件", bbox=[20, 20, 500, 40], block_no=1),
+        PdfTextBlock(block_id="body", page_no=1, text="企业名称变更正文", bbox=[20, 120, 500, 150], block_no=2),
+        PdfTextBlock(block_id="footer", page_no=1, text="22", bbox=[290, 760, 310, 780], block_no=3),
+    ]
+    tables = [
+        ParsedTable(table_id="body-table", page_no=1, rows=[["项目", "内容"]], bbox=[20, 180, 500, 260]),
+    ]
+    images = [
+        {"image_id": "header-logo", "page_no": 1, "xref": 10, "width": 300, "height": 80, "rect": [20, 10, 160, 60], "ext": "png"},
+        {"image_id": "body-image", "page_no": 1, "xref": 11, "width": 600, "height": 500, "rect": [20, 320, 260, 520], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+        layout_masks=[
+            {"page_no": 1, "label": "header", "bbox": [0, 0, 600, 80], "page_width": 600, "page_height": 800},
+            {"page_no": 1, "label": "number", "bbox": [0, 740, 600, 800], "page_width": 600, "page_height": 800},
+        ],
+    )
+
+    material_dir = tmp_path / "modules" / "补充文件" / "企业名称变更"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    image_files = sorted(path.name for path in (material_dir / "image_items").glob("*.png"))
+
+    assert "国网甘肃省电力公司" not in material_md
+    assert "\n22\n" not in material_md
+    assert "企业名称变更正文" in material_md
+    assert "[表格：企业名称变更_表1](table_items/企业名称变更_表1.json)" in material_md
+    assert image_files == ["企业名称变更_图1.png"]
+
+
 def test_package_module_artifacts_filters_repeated_page_header_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(

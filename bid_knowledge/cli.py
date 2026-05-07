@@ -15,6 +15,7 @@ from bid_knowledge.extraction.candidate_extractor import extract_candidates
 from bid_knowledge.extraction.chunk_builder import build_chunks
 from bid_knowledge.matching.section_matcher import match_sections
 from bid_knowledge.parsing.material_stream import build_combined_page_material_stream
+from bid_knowledge.parsing.layout_mask import build_layout_masks
 from bid_knowledge.parsing.ocr_client import run_ocr
 from bid_knowledge.parsing.ocr_merger import merge_ocr_results
 from bid_knowledge.parsing.module_packager import package_module_artifacts
@@ -442,6 +443,8 @@ def pdf_toc_pipeline_command(
     else:
         _pipeline_echo(3, total_steps, "PP-StructureV3 disabled; using PDF-native positioning only")
         write_json(parsed_dir / "pp_structure_results.json", [])
+    layout_masks = build_layout_masks(pp_structure_results)
+    write_json(parsed_dir / "page_layout_masks.json", layout_masks)
 
     _pipeline_echo(4, total_steps, "Building TOC leaf sections")
     candidates = build_toc_leaf_candidates(
@@ -480,6 +483,7 @@ def pdf_toc_pipeline_command(
         planned_section_paths=planned_paths,
         compound_material_rules=[],
         page_material_items=page_material_stream,
+        layout_masks=layout_masks,
     )
     write_json(root / "pdf_toc_pipeline_manifest.json", manifest)
     typer.echo(f"PDF TOC pipeline completed -> {root}")
@@ -612,6 +616,8 @@ def pipeline_command(
     else:
         _pipeline_echo(6, total_steps, "PP-StructureV3 disabled; using PDF-native parsing only")
         write_json(parsed_dir / "pp_structure_results.json", [])
+    layout_masks = build_layout_masks(pp_structure_results)
+    write_json(parsed_dir / "page_layout_masks.json", layout_masks)
 
     _pipeline_echo(7, total_steps, "Building page material stream")
     merged_blocks = _load_blocks(merged_blocks_path)
@@ -661,6 +667,7 @@ def pipeline_command(
         planned_section_paths=_history_section_paths_from_plan(plan),
         compound_material_rules=manual.compound_material_rules or None,
         page_material_items=page_material_stream,
+        layout_masks=layout_masks,
     )
     _pipeline_echo(12, total_steps, "Building retrieval chunks")
     build_chunks(candidates, out_path=retrieval_dir / "chunks.jsonl")

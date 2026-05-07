@@ -1129,6 +1129,7 @@ def _package_compound_materials(
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
     doc: Any,
     decorative_signatures: set[tuple[Any, ...]],
+    layout_masks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     manifests: list[dict[str, Any]] = []
     for rule in rules:
@@ -1156,6 +1157,14 @@ def _package_compound_materials(
                 and not _is_tiny_artifact_image(image)
             ],
             key=_image_sort_key,
+        )
+        scoped_blocks, scoped_tables, scoped_images, _ = _filter_items_by_layout_masks(
+            blocks=scoped_blocks,
+            tables=scoped_tables,
+            images=scoped_images,
+            page_material_items=[],
+            layout_masks=layout_masks,
+            doc=doc,
         )
         path_instances = _compound_instances_from_candidate_paths(anchor_path, child_paths, grouped_candidates, rule)
         anchor_manifest: dict[str, Any] = {
@@ -1501,6 +1510,86 @@ def _image_sort_key(image: dict[str, Any]) -> tuple[int, float, float]:
     return int(image.get("page_no") or 0), top, left
 
 
+def _bbox_center(bbox: list[Any] | None) -> tuple[float, float] | None:
+    if not bbox or len(bbox) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(value) for value in bbox[:4]]
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+
+def _page_size_for_mask_scaling(doc: Any, page_no: int) -> tuple[float | None, float | None]:
+    if doc is None:
+        return None, None
+    try:
+        page = doc.load_page(int(page_no) - 1)
+    except Exception:
+        return None, None
+    return float(page.rect.width), float(page.rect.height)
+
+
+def _scaled_mask_bbox(mask: dict[str, Any], doc: Any) -> list[float]:
+    bbox = [float(value) for value in (mask.get("bbox") or [])[:4]]
+    if len(bbox) < 4:
+        return []
+    source_width = mask.get("page_width")
+    source_height = mask.get("page_height")
+    try:
+        source_width_value = float(source_width) if source_width else None
+        source_height_value = float(source_height) if source_height else None
+    except (TypeError, ValueError):
+        source_width_value = None
+        source_height_value = None
+    target_width, target_height = _page_size_for_mask_scaling(doc, int(mask.get("page_no") or 0))
+    if not source_width_value or not source_height_value or not target_width or not target_height:
+        return bbox
+    scale_x = target_width / source_width_value
+    scale_y = target_height / source_height_value
+    return [bbox[0] * scale_x, bbox[1] * scale_y, bbox[2] * scale_x, bbox[3] * scale_y]
+
+
+def _bbox_center_in_mask(bbox: list[Any] | None, mask: dict[str, Any], doc: Any) -> bool:
+    center = _bbox_center(bbox)
+    if center is None:
+        return False
+    mask_bbox = _scaled_mask_bbox(mask, doc)
+    if len(mask_bbox) < 4:
+        return False
+    center_x, center_y = center
+    return float(mask_bbox[0]) <= center_x <= float(mask_bbox[2]) and float(mask_bbox[1]) <= center_y <= float(mask_bbox[3])
+
+
+def _filter_items_by_layout_masks(
+    *,
+    blocks: list[PdfTextBlock],
+    tables: list[ParsedTable],
+    images: list[dict[str, Any]],
+    page_material_items: list[dict[str, Any]],
+    layout_masks: list[dict[str, Any]] | None,
+    doc: Any,
+) -> tuple[list[PdfTextBlock], list[ParsedTable], list[dict[str, Any]], list[dict[str, Any]]]:
+    if not layout_masks:
+        return blocks, tables, images, page_material_items
+    masks_by_page: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for mask in layout_masks:
+        masks_by_page[int(mask.get("page_no") or 0)].append(mask)
+
+    def masked(page_no: int, bbox: list[Any] | None) -> bool:
+        return any(_bbox_center_in_mask(bbox, mask, doc) for mask in masks_by_page.get(int(page_no), []))
+
+    filtered_blocks = [block for block in blocks if not masked(block.page_no, block.bbox)]
+    filtered_tables = [table for table in tables if not masked(table.page_no, table.bbox)]
+    filtered_images = [image for image in images if not masked(int(image.get("page_no") or 0), image.get("rect") or [])]
+    filtered_page_items = [
+        item
+        for item in page_material_items
+        if not masked(int(item.get("page_no") or 0), item.get("bbox") or item.get("rect") or [])
+    ]
+    return filtered_blocks, filtered_tables, filtered_images, filtered_page_items
+
+
 def _decorative_image_signatures(images: list[dict[str, Any]]) -> set[tuple[Any, ...]]:
     counts: dict[tuple[Any, ...], int] = {}
     for image in images:
@@ -1828,6 +1917,7 @@ def package_module_artifacts(
     planned_section_paths: list[str] | None = None,
     compound_material_rules: list[dict[str, Any]] | None = None,
     page_material_items: list[PageMaterialItem | dict[str, Any]] | None = None,
+    layout_masks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         import fitz
@@ -1871,6 +1961,7 @@ def package_module_artifacts(
             image_bytes_resolver=image_bytes_resolver,
             doc=doc,
             decorative_signatures=decorative_signatures,
+            layout_masks=layout_masks,
         )
         generated_compound_anchors = {
             str(manifest.get("excel_anchor_path") or "")
@@ -1961,6 +2052,14 @@ def package_module_artifacts(
                     int(attachment_scope["end_page"]),
                     attachment_scope.get("end_y"),
                 )
+            module_blocks, module_tables, module_images, module_page_material_items = _filter_items_by_layout_masks(
+                blocks=module_blocks,
+                tables=module_tables,
+                images=module_images,
+                page_material_items=module_page_material_items,
+                layout_masks=layout_masks,
+                doc=doc,
+            )
             heading_candidates = build_heading_candidates([_block_dict(block) for block in module_blocks])
             path_parts = _section_parts(section_path)
 
