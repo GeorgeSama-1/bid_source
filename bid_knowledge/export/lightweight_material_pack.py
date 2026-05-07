@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+TABLE_EXTENSIONS = {".json"}
 
 
 def _copy_material_files(source_root: Path, package_root: Path) -> int:
@@ -31,6 +32,22 @@ def _copy_image_items(source_root: Path, package_root: Path) -> int:
             target_path = package_root / relative_path
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(image_file, target_path)
+            copied_count += 1
+    return copied_count
+
+
+def _copy_table_items(source_root: Path, package_root: Path) -> int:
+    copied_count = 0
+    for table_dir in source_root.rglob("table_items"):
+        if not table_dir.is_dir():
+            continue
+        for table_file in table_dir.iterdir():
+            if not table_file.is_file() or table_file.suffix.lower() not in TABLE_EXTENSIONS:
+                continue
+            relative_path = table_file.relative_to(source_root)
+            target_path = package_root / relative_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(table_file, target_path)
             copied_count += 1
     return copied_count
 
@@ -64,6 +81,7 @@ def export_lightweight_material_pack(
     package_modules_dir = target_package_dir / "modules"
     material_count = _copy_material_files(modules_dir, package_modules_dir)
     image_count = _copy_image_items(modules_dir, package_modules_dir)
+    table_count = _copy_table_items(modules_dir, package_modules_dir)
     _write_zip(target_package_dir, target_zip_path)
 
     return {
@@ -72,4 +90,5 @@ def export_lightweight_material_pack(
         "zip_path": str(target_zip_path),
         "material_count": material_count,
         "image_count": image_count,
+        "table_count": table_count,
     }

@@ -4,19 +4,22 @@ from pathlib import Path
 from bid_knowledge.export.lightweight_material_pack import export_lightweight_material_pack
 
 
-def test_export_lightweight_material_pack_keeps_material_markdown_and_images_only(tmp_path: Path) -> None:
+def test_export_lightweight_material_pack_keeps_material_markdown_images_and_tables(tmp_path: Path) -> None:
     output_dir = tmp_path / "outputs" / "structure_run"
     material_dir = output_dir / "modules" / "补充文件" / "材料A"
     image_dir = material_dir / "image_items"
+    table_dir = material_dir / "table_items"
     text_dir = material_dir / "text_items"
     original_dir = material_dir / "original"
     image_dir.mkdir(parents=True)
+    table_dir.mkdir()
     text_dir.mkdir()
     original_dir.mkdir()
-    (material_dir / "material.md").write_text("![图1](image_items/图1.png)\n", encoding="utf-8")
+    (material_dir / "material.md").write_text("| 字段 | 值 |\n| --- | --- |\n| 名称 | 材料A |\n\n![图1](image_items/图1.png)\n", encoding="utf-8")
     (material_dir / "material_meta.json").write_text("{}", encoding="utf-8")
     (image_dir / "图1.png").write_bytes(b"png")
     (image_dir / "图1.json").write_text("{}", encoding="utf-8")
+    (table_dir / "表1.json").write_text('{"rows":[["字段","值"],["名称","材料A"]]}', encoding="utf-8")
     (text_dir / "材料A.md").write_text("text", encoding="utf-8")
     (original_dir / "source_pages.pdf").write_bytes(b"pdf")
 
@@ -26,8 +29,10 @@ def test_export_lightweight_material_pack_keeps_material_markdown_and_images_onl
     zip_path = Path(result["zip_path"])
     assert result["material_count"] == 1
     assert result["image_count"] == 1
+    assert result["table_count"] == 1
     assert (package_dir / "modules" / "补充文件" / "材料A" / "material.md").exists()
     assert (package_dir / "modules" / "补充文件" / "材料A" / "image_items" / "图1.png").exists()
+    assert (package_dir / "modules" / "补充文件" / "材料A" / "table_items" / "表1.json").exists()
     assert not (package_dir / "modules" / "补充文件" / "材料A" / "image_items" / "图1.json").exists()
     assert not (package_dir / "modules" / "补充文件" / "材料A" / "material_meta.json").exists()
     assert not (package_dir / "modules" / "补充文件" / "材料A" / "text_items").exists()
@@ -37,4 +42,5 @@ def test_export_lightweight_material_pack_keeps_material_markdown_and_images_onl
         names = set(archive.namelist())
     assert "modules/补充文件/材料A/material.md" in names
     assert "modules/补充文件/材料A/image_items/图1.png" in names
+    assert "modules/补充文件/材料A/table_items/表1.json" in names
     assert "modules/补充文件/材料A/image_items/图1.json" not in names

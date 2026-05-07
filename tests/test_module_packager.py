@@ -322,7 +322,8 @@ def test_package_module_artifacts_filters_items_inside_pp_layout_masks(tmp_path:
     assert "国网甘肃省电力公司" not in material_md
     assert "\n22\n" not in material_md
     assert "企业名称变更正文" in material_md
-    assert "[表格：企业名称变更_表1](table_items/企业名称变更_表1.json)" in material_md
+    assert "| 项目 | 内容 |" in material_md
+    assert "| --- | --- |" in material_md
     assert image_files == ["企业名称变更_图1.png"]
 
 
@@ -1211,10 +1212,13 @@ def test_package_module_artifacts_writes_complete_section_markdown_with_table_an
     assert material_md.startswith("# 企业名称变更")
     assert "公司名称已完成变更。" in material_md
     assert "相关证明如下。" in material_md
-    assert "[表格：企业名称变更_表1](table_items/企业名称变更_表1.json)" in material_md
+    assert "| 变更前 | 变更后 |" in material_md
+    assert "| --- | --- |" in material_md
+    assert "| 旧公司 | 新公司 |" in material_md
+    assert "[表格：企业名称变更_表1]" not in material_md
     assert "![企业名称变更_图1](image_items/企业名称变更_图1.png)" in material_md
-    assert material_md.index("公司名称已完成变更。") < material_md.index("[表格：企业名称变更_表1]")
-    assert material_md.index("[表格：企业名称变更_表1]") < material_md.index("相关证明如下。")
+    assert material_md.index("公司名称已完成变更。") < material_md.index("| 变更前 | 变更后 |")
+    assert material_md.index("| 旧公司 | 新公司 |") < material_md.index("相关证明如下。")
     assert material_md.index("相关证明如下。") < material_md.index("![企业名称变更_图1]")
     assert (material_dir / "table_items" / "企业名称变更_表1.json").exists()
     assert (material_dir / "image_items" / "企业名称变更_图1.png").exists()

@@ -483,7 +483,7 @@ def _relative_markdown_path(material_dir: Path, path_value: str | None) -> str:
 def _render_table_markdown(rows: list[list[Any]]) -> str:
     if not rows:
         return ""
-    normalized = [[str(cell or "") for cell in row] for row in rows]
+    normalized = [[_escape_markdown_table_cell(str(cell or "")) for cell in row] for row in rows]
     width = max(len(row) for row in normalized)
     padded = [row + [""] * (width - len(row)) for row in normalized]
     header = padded[0]
@@ -494,6 +494,10 @@ def _render_table_markdown(rows: list[list[Any]]) -> str:
     ]
     lines.extend("| " + " | ".join(row) + " |" for row in body)
     return "\n".join(lines)
+
+
+def _escape_markdown_table_cell(value: str) -> str:
+    return value.replace("\n", "<br>").replace("|", "\\|").strip()
 
 
 def _load_json_if_exists(material_dir: Path, relative_path: str | None) -> dict[str, Any]:
@@ -552,7 +556,13 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
             payload_ref = item.get("payload_ref")
             if payload_ref:
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
-                lines.extend([f"[表格：{title}]({payload_ref})", ""])
+                table_data = _load_json_if_exists(material_dir, str(payload_ref))
+                rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
+                table_markdown = _render_table_markdown(rows)
+                if table_markdown:
+                    lines.extend([table_markdown, ""])
+                else:
+                    lines.extend([f"[表格：{title}]({payload_ref})", ""])
         elif item_type == "submaterial" and item.get("payload_ref"):
             sub_md = str(item["payload_ref"]).replace("ordered_material.json", "material.md")
             title = str(item.get("nearest_heading") or item.get("material_path") or "子材料").strip()
