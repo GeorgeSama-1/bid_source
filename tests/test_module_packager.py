@@ -1129,6 +1129,51 @@ def test_package_module_artifacts_writes_complete_material_package_for_review_in
     assert meta["material_markdown_path"] == "material.md"
 
 
+def test_package_module_artifacts_writes_complete_section_markdown_with_table_and_image_refs(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业名称变更",
+            1,
+            1,
+            "企业名称变更",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="企业名称变更", bbox=[0, 80, 200, 100], block_no=1, font_size=16),
+        PdfTextBlock(block_id="p1", page_no=1, text="公司名称已完成变更。", bbox=[0, 120, 300, 140], block_no=2, font_size=10),
+        PdfTextBlock(block_id="p2", page_no=1, text="相关证明如下。", bbox=[0, 320, 300, 340], block_no=3, font_size=10),
+    ]
+    tables = [
+        ParsedTable(table_id="name-change-table", page_no=1, rows=[["变更前", "变更后"], ["旧公司", "新公司"]], bbox=[10, 180, 300, 260]),
+    ]
+    images = [
+        {"image_id": "proof-img", "page_no": 1, "xref": 20, "width": 600, "height": 500, "rect": [10, 360, 300, 520], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "补充文件" / "企业名称变更"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    assert material_md.startswith("# 企业名称变更")
+    assert "公司名称已完成变更。" in material_md
+    assert "相关证明如下。" in material_md
+    assert "[表格：企业名称变更_表1](table_items/企业名称变更_表1.json)" in material_md
+    assert "![企业名称变更_图1](image_items/企业名称变更_图1.png)" in material_md
+    assert material_md.index("公司名称已完成变更。") < material_md.index("[表格：企业名称变更_表1]")
+    assert material_md.index("[表格：企业名称变更_表1]") < material_md.index("相关证明如下。")
+    assert material_md.index("相关证明如下。") < material_md.index("![企业名称变更_图1]")
+    assert (material_dir / "table_items" / "企业名称变更_表1.json").exists()
+    assert (material_dir / "image_items" / "企业名称变更_图1.png").exists()
+
+
 def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_markdown(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -1508,7 +1553,7 @@ def test_package_module_artifacts_uses_candidate_container_as_compound_instance(
     assert "利润表正文" in (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").read_text(encoding="utf-8")
 
 
-def test_package_module_artifacts_uses_pp_structure_titles_as_financial_instance_headings(tmp_path: Path) -> None:
+def test_package_module_artifacts_ignores_pp_structure_titles_for_financial_instance_headings(tmp_path: Path) -> None:
     anchor = "商务文件 / 补充文件 / 财务状况 / 经会计师事务所或审计机构审计的财务会计报表"
     candidates = [
         _candidate(f"{anchor} / 利润表", 12, 22, "财务状况"),
@@ -1580,12 +1625,11 @@ def test_package_module_artifacts_uses_pp_structure_titles_as_financial_instance
 
     base = tmp_path / "modules" / "补充文件" / "财务状况" / "经会计师事务所或审计机构审计的财务会计报表"
     anchor_markdown = (base / "material.md").read_text(encoding="utf-8")
-    profit_2022_md = (base / "3.7.1、2022 年度财务审计报告" / "利润表" / "material.md").read_text(encoding="utf-8")
 
-    assert "[3.7.1、2022 年度财务审计报告](3.7.1、2022 年度财务审计报告/material.md)" in anchor_markdown
-    assert "[3.7.2、2023 年度财务审计报告](3.7.2、2023 年度财务审计报告/material.md)" in anchor_markdown
-    assert "利润表正文" in profit_2022_md
-    assert "3.7.1、2022 年度财务审计报告" not in profit_2022_md
+    assert "3.7.1、2022 年度财务审计报告" not in anchor_markdown
+    assert "3.7.2、2023 年度财务审计报告" not in anchor_markdown
+    assert not (base / "3.7.1、2022 年度财务审计报告").exists()
+    assert (base / "利润表" / "material.md").exists()
 
 
 def test_package_module_artifacts_prefers_pdf_embedded_images_over_pp_structure_crops(tmp_path: Path) -> None:
