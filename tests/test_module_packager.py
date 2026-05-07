@@ -1224,6 +1224,174 @@ def test_package_module_artifacts_writes_complete_section_markdown_with_table_an
     assert (material_dir / "image_items" / "企业名称变更_图1.png").exists()
 
 
+def test_package_module_artifacts_omits_text_blocks_inside_rendered_table(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 财务状况",
+            1,
+            1,
+            "财务状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="财务状况", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(block_id="intro", page_no=1, text="以下为财务状况表。", bbox=[0, 120, 300, 140], block_no=2),
+        PdfTextBlock(block_id="cell1", page_no=1, text="年份", bbox=[20, 182, 80, 198], block_no=3),
+        PdfTextBlock(block_id="cell2", page_no=1, text="2024", bbox=[90, 182, 140, 198], block_no=4),
+        PdfTextBlock(block_id="after", page_no=1, text="表格之后的说明。", bbox=[0, 280, 300, 300], block_no=5),
+    ]
+    tables = [
+        ParsedTable(table_id="finance-table", page_no=1, rows=[["年份", "金额"], ["2024", "100"]], bbox=[10, 170, 300, 250]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "财务状况" / "material.md").read_text(encoding="utf-8")
+    assert "以下为财务状况表。" in material_md
+    assert "| 年份 | 金额 |" in material_md
+    assert "| 2024 | 100 |" in material_md
+    assert "表格之后的说明。" in material_md
+    assert material_md.count("年份") == 1
+    assert material_md.count("2024") == 1
+
+
+def test_package_module_artifacts_keeps_parent_preface_before_first_child_section(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "PDF / 3、 补充文件 / 3.7、 财务状况 / 3.7.1、 2022 年度财务审计报告",
+            1,
+            1,
+            "3.7、 财务状况",
+        )
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 240.0, "end_y": None, "start_block_id": "child-title"}
+    blocks = [
+        PdfTextBlock(block_id="parent-title", page_no=1, text="3.7、财务状况", bbox=[0, 100, 200, 120], block_no=1),
+        PdfTextBlock(block_id="preface", page_no=1, text="投标人近三年财务状况如下。", bbox=[0, 150, 400, 170], block_no=2),
+        PdfTextBlock(block_id="child-title", page_no=1, text="3.7.1、2022 年度财务审计报告", bbox=[0, 240, 400, 260], block_no=3),
+        PdfTextBlock(block_id="child-body", page_no=1, text="2022 年度报告正文", bbox=[0, 280, 400, 300], block_no=4),
+    ]
+    tables = [
+        ParsedTable(table_id="preface-table", page_no=1, rows=[["年份", "报告"], ["2022", "审计报告"]], bbox=[10, 180, 300, 230]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path for candidate in candidates],
+    )
+
+    parent_md = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.7、 财务状况"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    child_md = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.7、 财务状况"
+        / "3.7.1、 2022 年度财务审计报告"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "投标人近三年财务状况如下。" in parent_md
+    assert "| 年份 | 报告 |" in parent_md
+    assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
+    assert "2022 年度报告正文" in child_md
+    assert "投标人近三年财务状况如下。" not in child_md
+
+
+def test_package_module_artifacts_renders_field_value_text_blocks_as_table(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 投标人基本情况表",
+            1,
+            1,
+            "投标人基本情况表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="投标人基本情况表", bbox=[0, 80, 240, 100], block_no=1),
+        PdfTextBlock(block_id="label1", page_no=1, text="投标人名称：", bbox=[20, 130, 120, 150], block_no=2),
+        PdfTextBlock(block_id="value1", page_no=1, text="宁波理工环境能源科技股份有限公司", bbox=[140, 130, 420, 150], block_no=3),
+        PdfTextBlock(block_id="label2", page_no=1, text="法定代表人：", bbox=[20, 165, 120, 185], block_no=4),
+        PdfTextBlock(block_id="value2", page_no=1, text="周方洁", bbox=[140, 165, 220, 185], block_no=5),
+        PdfTextBlock(block_id="label3", page_no=1, text="注册地址：", bbox=[20, 200, 120, 220], block_no=6),
+        PdfTextBlock(block_id="value3", page_no=1, text="浙江省宁波市北仑区", bbox=[140, 200, 360, 220], block_no=7),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "投标人基本情况表" / "material.md").read_text(encoding="utf-8")
+    assert "| 字段 | 内容 |" in material_md
+    assert "| 投标人名称 | 宁波理工环境能源科技股份有限公司 |" in material_md
+    assert "| 法定代表人 | 周方洁 |" in material_md
+    assert "| 注册地址 | 浙江省宁波市北仑区 |" in material_md
+    assert "\n投标人名称：\n" not in material_md
+    assert "\n周方洁\n" not in material_md
+
+
+def test_package_module_artifacts_renders_full_detected_table_without_dropping_rows_or_columns(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 企业名称变更",
+            1,
+            1,
+            "企业名称变更",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="企业名称变更", bbox=[0, 80, 200, 100], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="full-table",
+            page_no=1,
+            rows=[
+                ["序号", "变更事项", "变更前", "变更后"],
+                ["1", "企业名称", "旧公司", "新公司"],
+                ["2", "注册地址", "旧地址", "新地址"],
+                ["3", "法定代表人", "张三", "李四"],
+            ],
+            bbox=[10, 130, 500, 260],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "企业名称变更" / "material.md").read_text(encoding="utf-8")
+    assert "| 序号 | 变更事项 | 变更前 | 变更后 |" in material_md
+    assert "| 1 | 企业名称 | 旧公司 | 新公司 |" in material_md
+    assert "| 2 | 注册地址 | 旧地址 | 新地址 |" in material_md
+    assert "| 3 | 法定代表人 | 张三 | 李四 |" in material_md
+    assert "table_items/企业名称变更_表1.json" not in material_md
+
+
 def test_package_module_artifacts_scopes_toc_leaf_sections_by_same_page_y_bounds(tmp_path: Path) -> None:
     candidates = [
         _candidate(

@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
+from bid_knowledge.matching.normalizer import normalize_section_title
 from bid_knowledge.parsing.attachment_asset_exporter import sanitize_asset_name
 from bid_knowledge.parsing.review_index_parser import align_business_review_index_entries, build_precise_folder_ranges, parse_business_review_index
 from bid_knowledge.schemas.models import (
@@ -83,6 +84,10 @@ def _text_item_base_title(folder_title: str) -> str:
 
 def _block_top_y(block: PdfTextBlock) -> float | None:
     return float(block.bbox[1]) if block.bbox and len(block.bbox) >= 2 else None
+
+
+def _block_bottom_y(block: PdfTextBlock) -> float | None:
+    return float(block.bbox[3]) if block.bbox and len(block.bbox) >= 4 else None
 
 
 def _text_signature(text: str) -> str:
@@ -324,10 +329,13 @@ def _ordered_material_items(
     ordered: list[dict[str, Any]] = []
     decorative_text = _decorative_text_signatures(text_blocks)
     heading_candidates = build_heading_candidates([_block_dict(block) for block in text_blocks if not _is_decorative_text_block(block, decorative_text)])
+    table_bboxes = _table_bboxes_by_page(table_items)
     for block in text_blocks:
         if _is_decorative_text_block(block, decorative_text):
             continue
         if block.source_type == "ocr":
+            continue
+        if _block_inside_any_table(block, table_bboxes):
             continue
         ordered.append(
             MaterialItemRef(
@@ -438,6 +446,28 @@ def _ordered_material_items(
     return sorted_items
 
 
+def _table_bboxes_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[list[float]]]:
+    grouped: dict[int, list[list[float]]] = defaultdict(list)
+    for table in table_items:
+        page_no = int(table.get("page_no") or 0)
+        bbox = table.get("bbox")
+        if page_no and isinstance(bbox, list) and len(bbox) >= 4:
+            grouped[page_no].append([float(value) for value in bbox[:4]])
+    return grouped
+
+
+def _block_inside_any_table(block: PdfTextBlock, table_bboxes: dict[int, list[list[float]]]) -> bool:
+    if not block.bbox or len(block.bbox) < 4:
+        return False
+    x0, y0, x1, y1 = [float(value) for value in block.bbox[:4]]
+    center_x = (x0 + x1) / 2
+    center_y = (y0 + y1) / 2
+    for tx0, ty0, tx1, ty1 in table_bboxes.get(int(block.page_no), []):
+        if tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1:
+            return True
+    return False
+
+
 def _material_path(parts: list[str]) -> str:
     return " / ".join(["商务文件", *parts])
 
@@ -523,6 +553,45 @@ def _is_ocr_derived_material_text(item: dict[str, Any]) -> bool:
     return bool(payload.get("ocr_texts"))
 
 
+def _is_field_label_text(text: str) -> bool:
+    stripped = str(text or "").strip()
+    return bool(stripped and len(stripped) <= 40 and re.search(r"[：:]\s*$", stripped))
+
+
+def _clean_field_label(text: str) -> str:
+    return re.sub(r"[：:]\s*$", "", str(text or "").strip()).strip()
+
+
+def _flush_text_markdown_lines(buffer: list[dict[str, Any]], seen_texts: set[str]) -> list[str]:
+    lines: list[str] = []
+    index = 0
+    while index < len(buffer):
+        pairs: list[list[str]] = []
+        cursor = index
+        while cursor + 1 < len(buffer):
+            label = str(buffer[cursor].get("text") or "").strip()
+            value = str(buffer[cursor + 1].get("text") or "").strip()
+            if not _is_field_label_text(label) or _is_field_label_text(value) or not value:
+                break
+            pairs.append([_clean_field_label(label), value])
+            cursor += 2
+        if len(pairs) >= 2:
+            lines.extend([_render_table_markdown([["字段", "内容"], *pairs]), ""])
+            for label, value in pairs:
+                seen_texts.add(re.sub(r"\s+", "", label))
+                seen_texts.add(re.sub(r"\s+", "", value))
+            index = cursor
+            continue
+
+        text = str(buffer[index].get("text") or "").strip()
+        text_key = re.sub(r"\s+", "", text)
+        if text and text_key not in seen_texts:
+            seen_texts.add(text_key)
+            lines.extend([text, ""])
+        index += 1
+    return lines
+
+
 def _write_material_markdown(material_dir: Path, material_title: str, ordered_items: list[dict[str, Any]]) -> Path:
     lines: list[str] = []
     has_non_image = any(
@@ -537,22 +606,23 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
         lines.extend([f"# {material_title}", ""])
 
     seen_texts: set[str] = set()
+    text_buffer: list[dict[str, Any]] = []
     for item in ordered_items:
         item_type = str(item.get("item_type") or item.get("type") or "")
         if item_type == "text":
             if _is_ocr_derived_material_text(item):
                 continue
-            text = str(item.get("text") or "").strip()
-            text_key = re.sub(r"\s+", "", text)
-            if text and text_key not in seen_texts:
-                seen_texts.add(text_key)
-                lines.extend([text, ""])
+            text_buffer.append(item)
         elif item_type == "image":
+            lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
+            text_buffer = []
             image_path = _relative_markdown_path(material_dir, item.get("file_path"))
             title = str(item.get("image_title") or item.get("nearest_heading") or item.get("image_id") or "图片").strip()
             if image_path:
                 lines.extend([f"![{title}]({image_path})", ""])
         elif item_type == "table":
+            lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
+            text_buffer = []
             payload_ref = item.get("payload_ref")
             if payload_ref:
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
@@ -564,9 +634,12 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 else:
                     lines.extend([f"[表格：{title}]({payload_ref})", ""])
         elif item_type == "submaterial" and item.get("payload_ref"):
+            lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
+            text_buffer = []
             sub_md = str(item["payload_ref"]).replace("ordered_material.json", "material.md")
             title = str(item.get("nearest_heading") or item.get("material_path") or "子材料").strip()
             lines.extend([f"[{title}]({sub_md})", ""])
+    lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
 
     markdown_path = material_dir / "material.md"
     markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -1838,6 +1911,251 @@ def _section_dirnames(section_paths: list[str]) -> dict[str, list[str]]:
     return mapping
 
 
+def _section_parts_tuple(section_path: str) -> tuple[str, ...]:
+    return tuple(_section_parts(section_path))
+
+
+def _parent_prefixes(section_paths: list[str]) -> set[tuple[str, ...]]:
+    prefixes: set[tuple[str, ...]] = set()
+    for section_path in section_paths:
+        parts = _section_parts(section_path)
+        for index in range(1, len(parts)):
+            prefixes.add(tuple(parts[:index]))
+    return prefixes
+
+
+def _parent_dirs_from_mapping(path_mapping: dict[str, list[str]]) -> dict[tuple[str, ...], Path]:
+    parent_dirs: dict[tuple[str, ...], Path] = {}
+    for section_path, safe_parts in path_mapping.items():
+        raw_parts = _section_parts(section_path)
+        for index in range(1, len(raw_parts)):
+            parent_dirs[tuple(raw_parts[:index])] = Path(*safe_parts[:index])
+    return parent_dirs
+
+
+def _candidate_start_position(candidate: ReusableCandidate) -> tuple[int, float]:
+    evidence = candidate.material_evidence if isinstance(candidate.material_evidence, dict) else {}
+    start_y = evidence.get("start_y")
+    return int(candidate.source_page or 0), float(start_y) if start_y is not None else 0.0
+
+
+def _find_parent_preface_scope(
+    parent_parts: tuple[str, ...],
+    grouped_candidates: dict[str, list[ReusableCandidate]],
+    blocks: list[PdfTextBlock],
+) -> dict[str, Any] | None:
+    child_candidates = [
+        candidate
+        for section_path, candidates in grouped_candidates.items()
+        if _section_parts_tuple(section_path)[: len(parent_parts)] == parent_parts
+        and len(_section_parts_tuple(section_path)) > len(parent_parts)
+        for candidate in candidates
+        if candidate.source_page
+    ]
+    if not child_candidates:
+        return None
+    first_child = sorted(child_candidates, key=_candidate_start_position)[0]
+    child_start_page, child_start_y = _candidate_start_position(first_child)
+    normalized_parent = normalize_section_title(parent_parts[-1])
+    if not normalized_parent:
+        return None
+
+    exact_title_blocks: list[PdfTextBlock] = []
+    fuzzy_title_blocks: list[PdfTextBlock] = []
+    for block in blocks:
+        if block.page_no > child_start_page:
+            continue
+        top_y = _block_top_y(block)
+        if block.page_no == child_start_page and top_y is not None and top_y >= child_start_y:
+            continue
+        normalized_block = normalize_section_title(block.text or "")
+        if normalized_block == normalized_parent:
+            exact_title_blocks.append(block)
+        elif normalized_block and (normalized_parent in normalized_block or normalized_block in normalized_parent):
+            fuzzy_title_blocks.append(block)
+    title_blocks = exact_title_blocks or fuzzy_title_blocks
+    if not title_blocks:
+        return None
+    title_block = sorted(title_blocks, key=lambda item: (item.page_no, _block_top_y(item) or 0.0))[-1]
+    evidence = first_child.material_evidence if isinstance(first_child.material_evidence, dict) else {}
+    return {
+        "title": parent_parts[-1],
+        "start_page": title_block.page_no,
+        "start_y": _block_bottom_y(title_block) or _block_top_y(title_block),
+        "end_page": child_start_page,
+        "end_y": child_start_y,
+        "start_block_id": title_block.block_id,
+        "end_block_id": evidence.get("start_block_id"),
+    }
+
+
+def _direct_child_markdown_entries(parent_dir: Path) -> list[tuple[str, Path]]:
+    return [
+        (child.name, child / "material.md")
+        for child in sorted(parent_dir.iterdir(), key=lambda item: item.name)
+        if child.is_dir() and (child / "material.md").exists()
+    ]
+
+
+def _append_child_links_to_markdown(material_dir: Path, entries: list[tuple[str, Path]]) -> None:
+    if not entries:
+        return
+    markdown_path = material_dir / "material.md"
+    current = markdown_path.read_text(encoding="utf-8").rstrip() if markdown_path.exists() else f"# {material_dir.name}"
+    lines = [current, "", "## 子章节", ""]
+    lines.extend(f"- [{title}]({_relative_markdown_path(material_dir, path)})" for title, path in entries)
+    markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _write_parent_preface_packages(
+    modules_dir: Path,
+    all_section_paths: list[str],
+    path_mapping: dict[str, list[str]],
+    grouped_candidates: dict[str, list[ReusableCandidate]],
+    blocks: list[PdfTextBlock],
+    tables: list[ParsedTable],
+    images: list[dict[str, Any]],
+    pdf_path: str | Path | None,
+    image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
+    doc: Any,
+    decorative_signatures: set[tuple[Any, ...]],
+    layout_masks: list[dict[str, Any]] | None = None,
+) -> None:
+    parent_dirs = _parent_dirs_from_mapping(path_mapping)
+    for parent_parts in sorted(_parent_prefixes(all_section_paths), key=len, reverse=True):
+        parent_relative_dir = parent_dirs.get(parent_parts)
+        if not parent_relative_dir:
+            continue
+        parent_dir = ensure_dir(modules_dir / parent_relative_dir)
+        if (parent_dir / "ordered_material.json").exists():
+            continue
+        scope = _find_parent_preface_scope(parent_parts, grouped_candidates, blocks)
+        if not scope:
+            continue
+        scoped_blocks = [
+            block
+            for block in blocks
+            if _item_in_range(block.page_no, _block_top_y(block), int(scope["start_page"]), scope.get("start_y"), int(scope["end_page"]), scope.get("end_y"))
+        ]
+        decorative_text = _decorative_text_signatures(scoped_blocks)
+        scoped_blocks = [block for block in scoped_blocks if not _is_decorative_text_block(block, decorative_text)]
+        scoped_tables = [
+            table
+            for table in tables
+            if _item_in_range(
+                table.page_no,
+                float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                int(scope["start_page"]),
+                scope.get("start_y"),
+                int(scope["end_page"]),
+                scope.get("end_y"),
+            )
+        ]
+        scoped_images = [
+            image
+            for image in images
+            if image.get("rect")
+            and not _is_decorative_image(image, decorative_signatures)
+            and not _is_tiny_artifact_image(image)
+            and _item_in_range(
+                int(image.get("page_no") or 0),
+                float((image.get("rect") or [0, 0, 0, 0])[1]),
+                int(scope["start_page"]),
+                scope.get("start_y"),
+                int(scope["end_page"]),
+                scope.get("end_y"),
+            )
+        ]
+        scoped_blocks, scoped_tables, scoped_images, _ = _filter_items_by_layout_masks(
+            blocks=scoped_blocks,
+            tables=scoped_tables,
+            images=scoped_images,
+            page_material_items=[],
+            layout_masks=layout_masks,
+            doc=doc,
+        )
+        if not scoped_blocks and not scoped_tables and not scoped_images:
+            continue
+
+        parent_title = parent_parts[-1]
+        section_path = " / ".join(["PDF", *parent_parts])
+        text_item = _write_text_item(
+            item_dir=ensure_dir(parent_dir / "text_items"),
+            folder_title=parent_title,
+            text_blocks=scoped_blocks,
+            section_path=section_path,
+            path_parts=list(parent_parts[:-1]),
+            pdf_path=pdf_path,
+        )
+        table_items: list[dict[str, Any]] = []
+        for table_index, table in enumerate(sorted(scoped_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])), start=1):
+            top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0
+            table_title = _sanitize_item_title(parent_title, f"表{table_index}")
+            json_path = ensure_dir(parent_dir / "table_items") / _item_filename(table_title, "json")
+            item = {
+                **_table_dict(table),
+                "section_path": section_path,
+                "folder_parts": list(parent_parts),
+                "table_title": table_title,
+                "context_title": parent_title,
+                "source_file": str(pdf_path or ""),
+                "review_status": "pending",
+                "json_path": str(json_path),
+                "_top_y": top_y,
+            }
+            write_json(json_path, item)
+            table_items.append(item)
+
+        image_items: list[dict[str, Any]] = []
+        for image_index, image in enumerate(sorted(scoped_images, key=_image_sort_key), start=1):
+            rect = image.get("rect") or [0, 0, 0, 0]
+            top_y = float(rect[1]) if len(rect) >= 2 else 0.0
+            image_title = _sanitize_item_title(parent_title, f"图{image_index}")
+            image_bytes, ext = _resolve_image_bytes(image, image_bytes_resolver, doc)
+            image_path = ensure_dir(parent_dir / "image_items") / _item_filename(image_title, ext)
+            if image_bytes is not None:
+                image_path.write_bytes(image_bytes)
+            json_path = ensure_dir(parent_dir / "image_items") / _item_filename(image_title, "json")
+            item = {
+                **image,
+                "section_path": section_path,
+                "folder_parts": list(parent_parts),
+                "image_title": image_title,
+                "context_title": parent_title,
+                "source_file": str(pdf_path or ""),
+                "review_status": "pending",
+                "file_path": str(image_path),
+                "json_path": str(json_path),
+                "_top_y": top_y,
+            }
+            write_json(json_path, item)
+            image_items.append(item)
+
+        _write_material_package(
+            material_dir=parent_dir,
+            subfolder={
+                "folder_title": parent_title,
+                "page_start": int(scope["start_page"]),
+                "page_end": int(scope["end_page"]),
+                "start_y": scope.get("start_y"),
+                "end_y": scope.get("end_y"),
+                "start_block_id": scope.get("start_block_id"),
+                "end_block_id": scope.get("end_block_id"),
+            },
+            section_path=section_path,
+            path_parts=list(parent_parts[:-1]),
+            pdf_path=pdf_path,
+            doc=doc,
+            text_blocks=scoped_blocks,
+            text_item=text_item,
+            table_items=table_items,
+            image_items=image_items,
+            page_material_items=[],
+            image_bytes_resolver=image_bytes_resolver,
+        )
+        _append_child_links_to_markdown(parent_dir, _direct_child_markdown_entries(parent_dir))
+
+
 def _subfolder_range_map(entries: list[dict[str, Any]], blocks: list[PdfTextBlock]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in build_precise_folder_ranges(entries, blocks):
@@ -2391,6 +2709,20 @@ def package_module_artifacts(
                     "candidate_count": len(section_candidates),
                 }
             )
+        _write_parent_preface_packages(
+            modules_dir=modules_dir,
+            all_section_paths=all_section_paths,
+            path_mapping=path_mapping,
+            grouped_candidates=grouped_candidates,
+            blocks=blocks,
+            tables=tables,
+            images=images,
+            pdf_path=pdf_path,
+            image_bytes_resolver=image_bytes_resolver,
+            doc=doc,
+            decorative_signatures=decorative_signatures,
+            layout_masks=layout_masks,
+        )
     finally:
         if doc is not None:
             doc.close()
