@@ -447,12 +447,14 @@ def pdf_toc_pipeline_command(
     write_json(parsed_dir / "page_layout_masks.json", layout_masks)
 
     _pipeline_echo(4, total_steps, "Building TOC leaf sections")
+    blocks = _load_blocks(parsed_dir / "text_blocks.json")
     candidates = build_toc_leaf_candidates(
         toc=toc,
         page_count=page_count,
         path_root=path_root,
         company_id="pdf",
         document_id=Path(pdf).stem,
+        blocks=blocks,
     )
     for candidate in candidates:
         candidate.source_file = str(pdf)
@@ -461,7 +463,6 @@ def pdf_toc_pipeline_command(
     write_json(candidates_dir / "toc_leaf_section_paths.json", planned_paths)
 
     _pipeline_echo(5, total_steps, "Building page material stream")
-    blocks = _load_blocks(parsed_dir / "text_blocks.json")
     images = _load_images(parsed_dir / "images.json")
     page_material_stream = _build_page_material_stream_payload(
         blocks=blocks,

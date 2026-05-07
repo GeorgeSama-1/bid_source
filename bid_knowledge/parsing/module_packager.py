@@ -1905,6 +1905,45 @@ def _entry_page_end(
     return max(int(entry.get("page_end") or entry["page_start"]), int(candidate_end))
 
 
+def _candidate_precise_scope(section_candidates: list[ReusableCandidate]) -> dict[str, Any] | None:
+    if not section_candidates:
+        return None
+    if not any(
+        isinstance(candidate.material_evidence, dict)
+        and (
+            candidate.material_evidence.get("source") == "pdf_toc_leaf"
+            or candidate.material_evidence.get("start_y") is not None
+            or candidate.material_evidence.get("end_y") is not None
+        )
+        for candidate in section_candidates
+    ):
+        return None
+    candidates_with_pages = [candidate for candidate in section_candidates if candidate.source_page]
+    if not candidates_with_pages:
+        return None
+    start_page = min(int(candidate.source_page or 0) for candidate in candidates_with_pages)
+    end_page = max(int(candidate.source_page_end or candidate.source_page or 0) for candidate in candidates_with_pages)
+    start_candidates = [candidate for candidate in candidates_with_pages if int(candidate.source_page or 0) == start_page]
+    end_candidates = [candidate for candidate in candidates_with_pages if int(candidate.source_page_end or candidate.source_page or 0) == end_page]
+
+    def evidence_value(candidate: ReusableCandidate, key: str) -> Any:
+        evidence = candidate.material_evidence if isinstance(candidate.material_evidence, dict) else {}
+        return evidence.get(key)
+
+    start_y_values = [evidence_value(candidate, "start_y") for candidate in start_candidates if evidence_value(candidate, "start_y") is not None]
+    end_y_values = [evidence_value(candidate, "end_y") for candidate in end_candidates if evidence_value(candidate, "end_y") is not None]
+    start_block_id = next((evidence_value(candidate, "start_block_id") for candidate in start_candidates if evidence_value(candidate, "start_block_id")), None)
+    end_block_id = next((evidence_value(candidate, "end_block_id") for candidate in end_candidates if evidence_value(candidate, "end_block_id")), None)
+    return {
+        "start_page": start_page,
+        "end_page": end_page,
+        "start_y": min(float(value) for value in start_y_values) if start_y_values else None,
+        "end_y": max(float(value) for value in end_y_values) if end_y_values else None,
+        "start_block_id": start_block_id,
+        "end_block_id": end_block_id,
+    }
+
+
 def package_module_artifacts(
     candidates: list[ReusableCandidate],
     blocks: list[PdfTextBlock],
@@ -1990,6 +2029,20 @@ def package_module_artifacts(
             module_blocks = [block for block in blocks if block.page_no in pages]
             decorative_text = _decorative_text_signatures(module_blocks)
             module_blocks = [block for block in module_blocks if not _is_decorative_text_block(block, decorative_text)]
+            candidate_scope = _candidate_precise_scope(section_candidates)
+            if candidate_scope:
+                module_blocks = [
+                    block
+                    for block in module_blocks
+                    if _item_in_range(
+                        block.page_no,
+                        _block_top_y(block),
+                        int(candidate_scope["start_page"]),
+                        candidate_scope.get("start_y"),
+                        int(candidate_scope["end_page"]),
+                        candidate_scope.get("end_y"),
+                    )
+                ]
             attachment_scope = _attachment_scope_for_section(section_path, module_blocks)
             if attachment_scope:
                 module_blocks = [
@@ -2005,6 +2058,19 @@ def package_module_artifacts(
                     )
                 ]
             module_tables = [table for table in tables if table.page_no in pages]
+            if candidate_scope:
+                module_tables = [
+                    table
+                    for table in module_tables
+                    if _item_in_range(
+                        table.page_no,
+                        float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                        int(candidate_scope["start_page"]),
+                        candidate_scope.get("start_y"),
+                        int(candidate_scope["end_page"]),
+                        candidate_scope.get("end_y"),
+                    )
+                ]
             if attachment_scope:
                 module_tables = [
                     table
@@ -2028,6 +2094,19 @@ def package_module_artifacts(
                 ],
                 key=_image_sort_key,
             )
+            if candidate_scope:
+                module_images = [
+                    image
+                    for image in module_images
+                    if _item_in_range(
+                        int(image.get("page_no") or 0),
+                        float((image.get("rect") or [0, 0, 0, 0])[1]),
+                        int(candidate_scope["start_page"]),
+                        candidate_scope.get("start_y"),
+                        int(candidate_scope["end_page"]),
+                        candidate_scope.get("end_y"),
+                    )
+                ]
             if attachment_scope:
                 module_images = [
                     image
@@ -2044,6 +2123,14 @@ def package_module_artifacts(
             if attachment_scope:
                 module_images = _limit_authorization_identity_images(section_path, module_images)
             module_page_material_items = _page_material_items_for_pages(page_material_items or [], pages)
+            if candidate_scope:
+                module_page_material_items = _page_material_items_in_range(
+                    module_page_material_items,
+                    int(candidate_scope["start_page"]),
+                    candidate_scope.get("start_y"),
+                    int(candidate_scope["end_page"]),
+                    candidate_scope.get("end_y"),
+                )
             if attachment_scope:
                 module_page_material_items = _page_material_items_in_range(
                     module_page_material_items,

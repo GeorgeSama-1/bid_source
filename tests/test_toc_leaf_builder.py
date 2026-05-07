@@ -3,6 +3,7 @@ from bid_knowledge.parsing.toc_leaf_builder import (
     toc_leaf_section_paths,
     top_level_modules_from_toc_candidates,
 )
+from bid_knowledge.schemas.models import PdfTextBlock
 
 
 def test_build_toc_leaf_candidates_uses_only_lowest_level_sections() -> None:
@@ -44,3 +45,30 @@ def test_top_level_modules_from_toc_candidates_uses_first_toc_level_below_root()
     )
 
     assert top_level_modules_from_toc_candidates(candidates) == ["补充文件", "商务文件正文"]
+
+
+def test_build_toc_leaf_candidates_records_same_page_y_boundaries() -> None:
+    candidates = build_toc_leaf_candidates(
+        toc=[
+            {"level": 1, "title": "3、 补充文件", "page": 1},
+            {"level": 2, "title": "3.1、 投标保证金", "page": 1},
+            {"level": 3, "title": "3.1.1、 汇款凭证", "page": 1},
+            {"level": 3, "title": "3.1.2、 投标保证金银行保函（无、本项目采用电汇）", "page": 1},
+            {"level": 3, "title": "3.1.3、 银行基本账户证明扫描件", "page": 1},
+        ],
+        page_count=2,
+        path_root="PDF",
+        blocks=[
+            PdfTextBlock(block_id="h311", page_no=1, text="3.1.1、汇款凭证", bbox=[0, 100, 300, 120], block_no=1),
+            PdfTextBlock(block_id="h312", page_no=1, text="3.1.2、投标保证金银行保函（无、本项目采用电汇）", bbox=[0, 300, 500, 320], block_no=2),
+            PdfTextBlock(block_id="h313", page_no=1, text="3.1.3、银行基本账户证明扫描件", bbox=[0, 500, 400, 520], block_no=3),
+        ],
+    )
+
+    assert candidates[0].title == "3.1.1、 汇款凭证"
+    assert candidates[0].source_page == 1
+    assert candidates[0].source_page_end == 1
+    assert candidates[0].material_evidence["start_y"] == 100.0
+    assert candidates[0].material_evidence["end_y"] == 300.0
+    assert candidates[1].material_evidence["start_block_id"] == "h312"
+    assert candidates[1].material_evidence["end_block_id"] == "h313"

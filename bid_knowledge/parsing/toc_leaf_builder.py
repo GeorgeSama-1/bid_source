@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from bid_knowledge.schemas.models import PdfTextBlock
 from bid_knowledge.schemas.models import ReusableCandidate
 from bid_knowledge.utils.id_utils import make_stable_id
 
@@ -24,6 +25,37 @@ def _toc_leaf_indexes(toc: list[dict[str, Any]]) -> set[int]:
     return leaf_indexes
 
 
+def _compact(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def _block_top_y(block: PdfTextBlock | None) -> float | None:
+    return float(block.bbox[1]) if block and block.bbox and len(block.bbox) >= 2 else None
+
+
+def _blocks_by_page(blocks: list[PdfTextBlock] | None) -> dict[int, list[PdfTextBlock]]:
+    grouped: dict[int, list[PdfTextBlock]] = {}
+    for block in sorted(blocks or [], key=lambda item: (item.page_no, _block_top_y(item) or 0.0, item.block_no)):
+        grouped.setdefault(block.page_no, []).append(block)
+    return grouped
+
+
+def _find_toc_title_block(title: str, page_no: int, blocks_by_page: dict[int, list[PdfTextBlock]]) -> PdfTextBlock | None:
+    target = _compact(title)
+    if not target:
+        return None
+    candidates = []
+    for block in blocks_by_page.get(page_no, []):
+        text = _compact(block.text)
+        if not text:
+            continue
+        if text == target or target in text or text in target:
+            candidates.append(block)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (len(_compact(item.text)), _block_top_y(item) or 0.0, item.block_no))[0]
+
+
 def build_toc_leaf_candidates(
     *,
     toc: list[dict[str, Any]],
@@ -31,11 +63,13 @@ def build_toc_leaf_candidates(
     path_root: str = "PDF",
     company_id: str = "pdf",
     document_id: str = "pdf_document",
+    blocks: list[PdfTextBlock] | None = None,
 ) -> list[ReusableCandidate]:
     root_parts = _toc_path_prefix(path_root)
     stack: list[str] = []
     leaf_indexes = _toc_leaf_indexes(toc)
-    candidates: list[ReusableCandidate] = []
+    blocks_by_page = _blocks_by_page(blocks)
+    leaf_entries: list[dict[str, Any]] = []
 
     for index, item in enumerate(toc):
         level = max(1, int(item.get("level") or 1))
@@ -54,25 +88,58 @@ def build_toc_leaf_candidates(
         section_parts = [*root_parts, *stack]
         parent_title = stack[-2] if len(stack) >= 2 else ""
         section_path = " / ".join(section_parts)
+        start_block = _find_toc_title_block(title, page_start, blocks_by_page)
+        leaf_entries.append(
+            {
+                "index": index,
+                "title": title,
+                "section_path": section_path,
+                "parent_title": parent_title,
+                "page_start": page_start,
+                "page_end": page_end,
+                "start_block": start_block,
+            }
+        )
+
+    candidates: list[ReusableCandidate] = []
+    for index, entry in enumerate(leaf_entries):
+        next_entry = leaf_entries[index + 1] if index + 1 < len(leaf_entries) else None
+        start_block = entry.get("start_block")
+        next_block = next_entry.get("start_block") if next_entry else None
+        start_y = _block_top_y(start_block)
+        end_y = _block_top_y(next_block) if next_block and int(next_entry["page_start"]) == int(entry["page_end"]) else None
+        page_end = int(entry["page_end"])
+        if next_entry and int(next_entry["page_start"]) == int(entry["page_start"]):
+            page_end = int(entry["page_start"])
+        evidence = {
+            "source": "pdf_toc_leaf",
+            "start_y": start_y,
+            "end_y": end_y,
+            "start_block_id": start_block.block_id if start_block else None,
+            "end_block_id": next_block.block_id if next_block and end_y is not None else None,
+        }
         candidates.append(
             ReusableCandidate(
-                candidate_id=make_stable_id("toc-leaf", index, section_path, page_start, page_end),
+                candidate_id=make_stable_id("toc-leaf", entry["index"], entry["section_path"], entry["page_start"], page_end),
                 company_id=company_id,
                 document_id=document_id,
-                rule_id=make_stable_id("toc-rule", section_path),
-                section_path=section_path,
+                rule_id=make_stable_id("toc-rule", entry["section_path"]),
+                section_path=entry["section_path"],
                 from_history_bid=True,
                 has_standard_template=True,
-                title=title,
+                title=entry["title"],
                 content="",
                 candidate_type="pdf_toc_leaf",
                 reuse_method="PDF目录叶子章节",
                 reuse_level="document",
                 enter_long_term_library=True,
                 source_file="",
-                source_page=page_start,
+                source_page=int(entry["page_start"]),
                 source_page_end=page_end,
-                source_container_title=parent_title,
+                source_container_title=entry["parent_title"],
+                source_bbox=start_block.bbox if start_block else None,
+                source_block_ids=[start_block.block_id] if start_block else [],
+                material_evidence=evidence,
             )
         )
 

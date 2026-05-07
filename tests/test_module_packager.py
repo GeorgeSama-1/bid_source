@@ -1220,6 +1220,65 @@ def test_package_module_artifacts_writes_complete_section_markdown_with_table_an
     assert (material_dir / "image_items" / "企业名称变更_图1.png").exists()
 
 
+def test_package_module_artifacts_scopes_toc_leaf_sections_by_same_page_y_bounds(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "PDF / 3、 补充文件 / 3.1、 投标保证金 / 3.1.1、 汇款凭证",
+            1,
+            1,
+            "3.1、 投标保证金",
+        ),
+        _candidate(
+            "PDF / 3、 补充文件 / 3.1、 投标保证金 / 3.1.2、 投标保证金银行保函（无、本项目采用电汇）",
+            1,
+            1,
+            "3.1、 投标保证金",
+        ),
+        _candidate(
+            "PDF / 3、 补充文件 / 3.1、 投标保证金 / 3.1.3、 银行基本账户证明扫描件",
+            1,
+            1,
+            "3.1、 投标保证金",
+        ),
+    ]
+    candidates[0].material_evidence = {"start_y": 100.0, "end_y": 300.0, "start_block_id": "h311", "end_block_id": "h312"}
+    candidates[1].material_evidence = {"start_y": 300.0, "end_y": 500.0, "start_block_id": "h312", "end_block_id": "h313"}
+    candidates[2].material_evidence = {"start_y": 500.0, "end_y": None, "start_block_id": "h313", "end_block_id": None}
+    blocks = [
+        PdfTextBlock(block_id="p", page_no=1, text="3、补充文件", bbox=[0, 20, 200, 40], block_no=1),
+        PdfTextBlock(block_id="p31", page_no=1, text="3.1、投标保证金", bbox=[0, 60, 200, 80], block_no=2),
+        PdfTextBlock(block_id="h311", page_no=1, text="3.1.1、汇款凭证", bbox=[0, 100, 200, 120], block_no=3),
+        PdfTextBlock(block_id="h312", page_no=1, text="3.1.2、投标保证金银行保函（无、本项目采用电汇）", bbox=[0, 300, 400, 320], block_no=4),
+        PdfTextBlock(block_id="h313", page_no=1, text="3.1.3、银行基本账户证明扫描件", bbox=[0, 500, 300, 520], block_no=5),
+    ]
+    images = [
+        {"image_id": "transfer", "page_no": 1, "xref": 10, "width": 600, "height": 500, "rect": [20, 150, 300, 260], "ext": "jpeg"},
+        {"image_id": "bank", "page_no": 1, "xref": 11, "width": 600, "height": 500, "rect": [20, 560, 300, 700], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "jpeg")),
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path for candidate in candidates],
+    )
+
+    base = tmp_path / "modules" / "3、 补充文件" / "3.1、 投标保证金"
+    guarantee_md = (base / "3.1.2、 投标保证金银行保函（无、本项目采用电汇）" / "material.md").read_text(encoding="utf-8")
+    transfer_md = (base / "3.1.1、 汇款凭证" / "material.md").read_text(encoding="utf-8")
+
+    assert "3.1.2、投标保证金银行保函" in guarantee_md
+    assert "汇款凭证_图1" not in guarantee_md
+    assert "银行基本账户证明扫描件_图1" not in guarantee_md
+    assert "3.1.1、汇款凭证" not in guarantee_md
+    assert "3.1.3、银行基本账户证明扫描件" not in guarantee_md
+    assert "![汇款凭证_图1](image_items/汇款凭证_图1.jpeg)" in transfer_md
+
+
 def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_markdown(tmp_path: Path) -> None:
     candidates = [
         _candidate(
