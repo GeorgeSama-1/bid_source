@@ -1,48 +1,12 @@
 from __future__ import annotations
 
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from bid_knowledge.parsing.table_model import build_table_model_from_html, build_table_model_from_rows
 from bid_knowledge.schemas.models import ParsedTable
 from bid_knowledge.utils.id_utils import make_stable_id
 from bid_knowledge.utils.io_utils import write_json
-from bid_knowledge.utils.text_utils import clean_text
-
-
-class _TableHTMLParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.rows: list[list[str]] = []
-        self._current_row: list[str] | None = None
-        self._current_cell: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "tr":
-            self._current_row = []
-        elif tag in {"td", "th"} and self._current_row is not None:
-            self._current_cell = []
-
-    def handle_data(self, data: str) -> None:
-        if self._current_cell is not None:
-            self._current_cell.append(data)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"td", "th"} and self._current_row is not None and self._current_cell is not None:
-            self._current_row.append(clean_text("".join(self._current_cell)))
-            self._current_cell = None
-        elif tag == "tr" and self._current_row is not None:
-            if any(clean_text(cell) for cell in self._current_row):
-                self.rows.append(self._current_row)
-            self._current_row = None
-
-
-def _parse_html_table_rows(content: str) -> list[list[str]]:
-    if "<table" not in content.lower():
-        return []
-    parser = _TableHTMLParser()
-    parser.feed(content)
-    return parser.rows
 
 
 def _float_bbox(value: Any) -> list[float] | None:
@@ -125,14 +89,17 @@ def extract_pp_structure_tables(
             if not bbox:
                 continue
             content = str(block.get("block_content") or "")
+            table_model = build_table_model_from_html(content, bbox=bbox)
             tables.append(
                 ParsedTable(
                     table_id=make_stable_id("pp-table", page_no, block_index, bbox, content[:120]),
                     page_no=page_no,
-                    rows=_parse_html_table_rows(content),
+                    rows=table_model["rows"],
                     bbox=bbox,
                     source_type="pp_structure_table",
                     table_content=content,
+                    table_html=content,
+                    table_model=table_model,
                     source_detail="parsing_res_list",
                     pp_block_id=block.get("block_id"),
                     pp_block_order=block.get("block_order"),
@@ -155,6 +122,8 @@ def extract_pp_structure_tables(
                     bbox=bbox,
                     source_type="pp_structure_table",
                     table_content="",
+                    table_html="",
+                    table_model=build_table_model_from_rows([], source="pp_structure_layout", bbox=bbox),
                     source_detail="layout_det_res",
                     pp_score=box.get("score"),
                 )

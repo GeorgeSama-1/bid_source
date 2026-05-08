@@ -53,4 +53,7 @@ def test_extract_tables_reports_progress(tmp_path: Path, monkeypatch) -> None:
     tables = extract_tables(pdf_path, progress_callback=lambda current, total: events.append((current, total)))
 
     assert len(tables) == 2
+    assert tables[0].table_model["row_count"] == 1
+    assert tables[0].table_model["col_count"] == 2
+    assert tables[0].table_model["cells"][0]["text"] == "名称"
     assert events == [(1, 2), (2, 2)]
