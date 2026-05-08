@@ -137,7 +137,7 @@ def test_run_pp_structure_command_reports_page_count(monkeypatch, tmp_path: Path
     assert "PP-StructureV3 finished for 1 pages" in result.output
 
 
-def test_pdf_toc_pipeline_prefers_pp_structure_tables_when_enabled(monkeypatch, tmp_path: Path) -> None:
+def test_pdf_toc_pipeline_merges_pdf_tables_when_pp_structure_misses_them(monkeypatch, tmp_path: Path) -> None:
     runner = CliRunner()
     block = PdfTextBlock(
         block_id="block-1",
@@ -170,6 +170,13 @@ def test_pdf_toc_pipeline_prefers_pp_structure_tables_when_enabled(monkeypatch, 
         bbox=[20, 80, 400, 200],
         source_type="pp_structure_table",
     )
+    pdf_table = ParsedTable(
+        table_id="pdf-table-1",
+        page_no=1,
+        rows=[["补充", "表格"]],
+        bbox=[20, 240, 400, 320],
+        source_type="pdf_table",
+    )
     captured: dict[str, object] = {}
 
     def fake_parse_pdf(*_, out_dir=None, **__):
@@ -179,7 +186,7 @@ def test_pdf_toc_pipeline_prefers_pp_structure_tables_when_enabled(monkeypatch, 
         return {"toc": [{"title": "1、测试章节", "page": 1, "level": 1}], "document_meta": {"page_count": 1}}
 
     monkeypatch.setattr(cli, "parse_pdf", fake_parse_pdf)
-    monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: (_ for _ in ()).throw(AssertionError("pdfplumber should not run")))
+    monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: [pdf_table])
     monkeypatch.setattr(cli, "run_pp_structure", lambda *_, **__: [{"res": {"page_index": 0}, "page_index": 0}])
     monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [pp_table])
     monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
@@ -208,4 +215,4 @@ def test_pdf_toc_pipeline_prefers_pp_structure_tables_when_enabled(monkeypatch, 
     )
 
     assert result.exit_code == 0
-    assert captured["tables"] == [pp_table]
+    assert captured["tables"] == [pp_table, pdf_table]

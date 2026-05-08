@@ -649,9 +649,9 @@ def _is_ocr_derived_material_text(item: dict[str, Any]) -> bool:
     source_type = str(item.get("source_type") or "")
     if source_type == "ocr":
         return True
-    if source_type.startswith("pp_structure_text"):
-        return True
     payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    if source_type == "pp_structure_text_region":
+        return True
     return bool(payload.get("ocr_texts"))
 
 

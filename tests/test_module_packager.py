@@ -2446,3 +2446,74 @@ def test_ordered_material_skips_pp_structure_table_region_when_table_item_exists
 
     assert material.count("| 字段 | 内容 |") == 1
     assert sum(1 for item in ordered["items"] if item["item_type"] == "table") == 1
+
+
+def test_attachment_submaterial_keeps_pp_structure_text_between_fu_anchors(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
+            1,
+            1,
+            "4、法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=1, text="4、法定代表人授权委托书", bbox=[0, 20, 300, 40], block_no=1),
+        PdfTextBlock(block_id="b2", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 100, 420, 120], block_no=2),
+        PdfTextBlock(block_id="b3", page_no=1, text="附：被授权人身份证等有效身份证件（扫描件）", bbox=[0, 260, 420, 280], block_no=3),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-text-after-fu-1",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=1,
+            top_y=140,
+            bbox=[0, 140, 500, 170],
+            text="此处为换行后的附件正文第一行\n此处为换行后的附件正文第二行",
+            payload={"layout_label": "text"},
+        ),
+        PageMaterialItem(
+            item_id="pp-text-after-fu-2",
+            item_type="text",
+            source_type="pp_structure_text",
+            page_no=1,
+            top_y=300,
+            bbox=[0, 300, 500, 330],
+            text="第二个附件正文",
+            payload={"layout_label": "text"},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    first_child_md = (
+        tmp_path
+        / "modules"
+        / "法定代表人授权委托书"
+        / "法定代表人授权委托书"
+        / "submaterials"
+        / "法定代表人（单位负责人）身份证（扫描件）"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    second_child_md = (
+        tmp_path
+        / "modules"
+        / "法定代表人授权委托书"
+        / "法定代表人授权委托书"
+        / "submaterials"
+        / "被授权人身份证等有效身份证件（扫描件）"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "此处为换行后的附件正文第一行" in first_child_md
+    assert "此处为换行后的附件正文第二行" in first_child_md
+    assert "第二个附件正文" not in first_child_md
+    assert "第二个附件正文" in second_child_md

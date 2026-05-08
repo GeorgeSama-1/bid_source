@@ -84,6 +84,28 @@ def _duplicates_existing(bbox: list[float], existing: list[ParsedTable]) -> bool
     return any(table.bbox and _bbox_overlap_ratio(bbox, [float(value) for value in table.bbox[:4]]) >= 0.8 for table in existing)
 
 
+def merge_pp_and_pdf_tables(pp_tables: list[ParsedTable], pdf_tables: list[ParsedTable]) -> list[ParsedTable]:
+    merged = list(pp_tables)
+    for table in pdf_tables:
+        if table.bbox:
+            pdf_bbox = [float(value) for value in table.bbox[:4]]
+            overlapping_index = next(
+                (
+                    index
+                    for index, existing in enumerate(merged)
+                    if existing.bbox and _bbox_overlap_ratio(pdf_bbox, [float(value) for value in existing.bbox[:4]]) >= 0.8
+                ),
+                None,
+            )
+            if overlapping_index is not None:
+                existing = merged[overlapping_index]
+                if not existing.rows and table.rows:
+                    merged[overlapping_index] = table
+                continue
+        merged.append(table)
+    return sorted(merged, key=lambda item: (item.page_no, float((item.bbox or [0, 0, 0, 0])[1]) if item.bbox else 0.0))
+
+
 def extract_pp_structure_tables(
     pp_structure_results: list[dict[str, Any]],
     *,

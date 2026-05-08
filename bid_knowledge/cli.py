@@ -21,7 +21,7 @@ from bid_knowledge.parsing.ocr_merger import merge_ocr_results
 from bid_knowledge.parsing.module_packager import package_module_artifacts
 from bid_knowledge.parsing.pdf_parser import parse_pdf, render_pdf_pages
 from bid_knowledge.parsing.pp_structure import run_pp_structure
-from bid_knowledge.parsing.pp_table_extractor import extract_pp_structure_tables
+from bid_knowledge.parsing.pp_table_extractor import extract_pp_structure_tables, merge_pp_and_pdf_tables
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
 from bid_knowledge.parsing.toc_leaf_builder import (
@@ -445,7 +445,11 @@ def pdf_toc_pipeline_command(
 
     if pp_structure_enabled:
         _pipeline_echo(3, total_steps, "Extracting PP-Structure tables")
-        tables = extract_pp_structure_tables(pp_structure_results, out_path=parsed_dir / "tables.json")
+        with _make_progress_callback(show_progress, "Extracting PDF-native fallback tables") as progress_callback:
+            pdf_tables = extract_tables(pdf, plan=None, progress_callback=progress_callback)
+        pp_tables = extract_pp_structure_tables(pp_structure_results)
+        tables = merge_pp_and_pdf_tables(pp_tables, pdf_tables)
+        write_json(parsed_dir / "tables.json", tables)
     else:
         _pipeline_echo(3, total_steps, "Extracting PDF-native tables")
         with _make_progress_callback(show_progress, "Extracting tables") as progress_callback:
