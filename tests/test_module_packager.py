@@ -538,19 +538,18 @@ def test_package_module_artifacts_assigns_attachment_stream_image_to_fu_heading(
         page_material_items=page_material_items,
     )
 
-    child_ordered_path = (
+    ordered_path = (
         tmp_path
         / "modules"
         / "法定代表人授权委托书"
         / "法定代表人授权委托书"
-        / "submaterials"
-        / "被授权人身份证等有效身份证件（扫描件）"
         / "ordered_material.json"
     )
-    child_ordered = json.loads(child_ordered_path.read_text(encoding="utf-8"))
-    stream_image = next(item for item in child_ordered["items"] if item.get("item_id") == "pp-image-id-card")
+    ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
+    stream_image = next(item for item in ordered["items"] if item.get("item_id") == "pp-image-id-card")
 
     assert stream_image["nearest_heading"] == "附：被授权人身份证等有效身份证件（扫描件）"
+    assert all(item["item_type"] != "submaterial" for item in ordered["items"])
 
 
 def test_package_module_artifacts_does_not_name_image_from_bid_package_context(tmp_path: Path) -> None:
@@ -1524,7 +1523,7 @@ def test_package_module_artifacts_renders_field_value_text_blocks_as_table(tmp_p
     assert "\n周方洁\n" not in material_md
 
 
-def test_package_module_artifacts_parent_links_attachment_submaterials_without_expanding_child_content(tmp_path: Path) -> None:
+def test_package_module_artifacts_keeps_fu_content_inline_without_submaterials(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "商务文件 / 法定代表人授权委托书",
@@ -1554,19 +1553,14 @@ def test_package_module_artifacts_parent_links_attachment_submaterials_without_e
 
     material_dir = tmp_path / "modules" / "法定代表人授权委托书"
     material_md = (material_dir / "material.md").read_text(encoding="utf-8")
-    submaterial_md = (
-        material_dir
-        / "submaterials"
-        / "法定代表人（单位负责人）身份证（扫描件）"
-        / "material.md"
-    ).read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
 
     assert "委托代理人办理投标事宜。" in material_md
-    assert "[附：法定代表人（单位负责人）身份证（扫描件）](submaterials/法定代表人（单位负责人）身份证（扫描件）/material.md)" in material_md
-    assert "身份证号码" not in material_md
-    assert "![法定代表人（单位负责人）身份证（扫描件）_图1]" not in material_md
-    assert "身份证号码：3302" in submaterial_md
-    assert "![法定代表人（单位负责人）身份证（扫描件）_图1](image_items/法定代表人（单位负责人）身份证（扫描件）_图1.png)" in submaterial_md
+    assert "附：法定代表人（单位负责人）身份证（扫描件）" in material_md
+    assert "身份证号码：3302" in material_md
+    assert "![法定代表人（单位负责人）身份证（扫描件）_图1](image_items/法定代表人（单位负责人）身份证（扫描件）_图1.png)" in material_md
+    assert not (material_dir / "submaterials").exists()
+    assert all(item["item_type"] != "submaterial" for item in ordered["items"])
 
 
 def test_package_module_artifacts_renders_full_detected_table_without_dropping_rows_or_columns(tmp_path: Path) -> None:
@@ -2171,7 +2165,7 @@ def test_package_module_artifacts_prefers_pdf_embedded_images_over_pp_structure_
     assert all(item.get("item_id") != "pp-image-1" for item in ordered["items"])
 
 
-def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) -> None:
+def test_package_module_artifacts_keeps_global_fu_content_inline(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
@@ -2200,22 +2194,19 @@ def test_package_module_artifacts_creates_global_fu_submaterial(tmp_path: Path) 
     )
 
     section_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书"
-    submaterial_dir = section_dir / "submaterials" / "法定代表人（单位负责人）身份证（扫描件）"
     assert (section_dir / "ordered_material.json").exists()
-    assert (submaterial_dir / "ordered_material.json").exists()
-    assert (submaterial_dir / "material_meta.json").exists()
 
     parent_ordered = json.loads((section_dir / "ordered_material.json").read_text(encoding="utf-8"))
-    child_ordered = json.loads((submaterial_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    material_md = (section_dir / "material.md").read_text(encoding="utf-8")
 
-    assert any(item["item_type"] == "submaterial" for item in parent_ordered["items"])
-    assert any(item["payload_ref"].endswith("submaterials/法定代表人（单位负责人）身份证（扫描件）/ordered_material.json") for item in parent_ordered["items"] if item["item_type"] == "submaterial")
-    assert child_ordered["material_title"] == "法定代表人（单位负责人）身份证（扫描件）"
-    assert child_ordered["items"][0]["nearest_heading"] == "附：法定代表人（单位负责人）身份证（扫描件）"
-    assert [item["item_type"] for item in child_ordered["items"]] == ["text", "text", "image"]
+    assert not any(item["item_type"] == "submaterial" for item in parent_ordered["items"])
+    assert "附：法定代表人（单位负责人）身份证（扫描件）" in material_md
+    assert "身份证说明文字" in material_md
+    assert "![法定代表人（单位负责人）身份证（扫描件）_图1](image_items/法定代表人（单位负责人）身份证（扫描件）_图1.png)" in material_md
+    assert not (section_dir / "submaterials").exists()
 
 
-def test_package_module_artifacts_suffixes_duplicate_fu_submaterials(tmp_path: Path) -> None:
+def test_package_module_artifacts_keeps_duplicate_fu_lines_inline(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
@@ -2240,10 +2231,12 @@ def test_package_module_artifacts_suffixes_duplicate_fu_submaterials(tmp_path: P
         out_dir=tmp_path,
     )
 
-    submaterials_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书" / "submaterials"
-    names = sorted(path.name for path in submaterials_dir.iterdir() if path.is_dir())
-    assert "营业执照副本" in names
-    assert any(name.startswith("营业执照副本_") for name in names)
+    material_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    assert material_md.count("附：营业执照副本") == 2
+    assert "第一页附件说明" in material_md
+    assert "第二页附件说明" in material_md
+    assert not (material_dir / "submaterials").exists()
 
 
 def test_package_module_artifacts_preserves_cross_page_material_stream_order(tmp_path: Path) -> None:
@@ -2448,7 +2441,7 @@ def test_ordered_material_skips_pp_structure_table_region_when_table_item_exists
     assert sum(1 for item in ordered["items"] if item["item_type"] == "table") == 1
 
 
-def test_attachment_submaterial_keeps_pp_structure_text_between_fu_anchors(tmp_path: Path) -> None:
+def test_fu_lines_do_not_create_submaterials_or_drop_pp_structure_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "商务文件 / 法定代表人授权委托书 / 法定代表人授权委托书",
@@ -2494,26 +2487,14 @@ def test_attachment_submaterial_keeps_pp_structure_text_between_fu_anchors(tmp_p
         page_material_items=page_material_items,
     )
 
-    first_child_md = (
-        tmp_path
-        / "modules"
-        / "法定代表人授权委托书"
-        / "法定代表人授权委托书"
-        / "submaterials"
-        / "法定代表人（单位负责人）身份证（扫描件）"
-        / "material.md"
-    ).read_text(encoding="utf-8")
-    second_child_md = (
-        tmp_path
-        / "modules"
-        / "法定代表人授权委托书"
-        / "法定代表人授权委托书"
-        / "submaterials"
-        / "被授权人身份证等有效身份证件（扫描件）"
-        / "material.md"
-    ).read_text(encoding="utf-8")
+    material_dir = tmp_path / "modules" / "法定代表人授权委托书" / "法定代表人授权委托书"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
 
-    assert "此处为换行后的附件正文第一行" in first_child_md
-    assert "此处为换行后的附件正文第二行" in first_child_md
-    assert "第二个附件正文" not in first_child_md
-    assert "第二个附件正文" in second_child_md
+    assert "附：法定代表人（单位负责人）身份证（扫描件）" in material_md
+    assert "此处为换行后的附件正文第一行" in material_md
+    assert "此处为换行后的附件正文第二行" in material_md
+    assert "附：被授权人身份证等有效身份证件（扫描件）" in material_md
+    assert "第二个附件正文" in material_md
+    assert not (material_dir / "submaterials").exists()
+    assert all(item["item_type"] != "submaterial" for item in ordered["items"])

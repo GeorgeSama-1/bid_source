@@ -686,12 +686,19 @@ def _flush_text_markdown_lines(buffer: list[dict[str, Any]], seen_texts: set[str
             continue
 
         text = str(buffer[index].get("text") or "").strip()
-        text_key = re.sub(r"\s+", "", text)
+        text_key = _text_item_position_signature(buffer[index])
         if text and text_key not in seen_texts:
             seen_texts.add(text_key)
             lines.extend([text, ""])
         index += 1
     return lines
+
+
+def _text_item_position_signature(item: dict[str, Any]) -> str:
+    text = re.sub(r"\s+", "", str(item.get("text") or ""))
+    page_no = int(item.get("page_no") or 0)
+    top_y = float(item.get("top_y") or 0.0)
+    return f"{text}|p{page_no}|y{top_y:.1f}"
 
 
 def _write_material_markdown(material_dir: Path, material_title: str, ordered_items: list[dict[str, Any]]) -> Path:
@@ -820,22 +827,7 @@ def _write_material_package(
             for item in page_material_items or []
             if str(item.get("item_type") or item.get("type") or "") != "image"
         ]
-    submaterial_items = (
-        _write_attachment_submaterials(
-            material_dir=material_dir,
-            section_path=section_path,
-            path_parts=path_parts + [subfolder["folder_title"]],
-            pdf_path=pdf_path,
-            doc=doc,
-            text_blocks=text_blocks,
-            table_items=table_items,
-            image_items=image_items,
-            page_material_items=page_material_items or [],
-            image_bytes_resolver=image_bytes_resolver,
-        )
-        if allow_submaterials
-        else []
-    )
+    submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
     if submaterial_ranges:
         text_blocks = [
