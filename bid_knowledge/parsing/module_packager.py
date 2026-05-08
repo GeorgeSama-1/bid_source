@@ -329,13 +329,13 @@ def _ordered_material_items(
     ordered: list[dict[str, Any]] = []
     decorative_text = _decorative_text_signatures(text_blocks)
     heading_candidates = build_heading_candidates([_block_dict(block) for block in text_blocks if not _is_decorative_text_block(block, decorative_text)])
-    table_bboxes = _table_bboxes_by_page(table_items)
+    table_regions = _table_regions_by_page(table_items)
     for block in text_blocks:
         if _is_decorative_text_block(block, decorative_text):
             continue
         if block.source_type == "ocr":
             continue
-        if _block_inside_any_table(block, table_bboxes):
+        if _block_inside_any_table(block, table_regions):
             continue
         ordered.append(
             MaterialItemRef(
@@ -446,24 +446,49 @@ def _ordered_material_items(
     return sorted_items
 
 
-def _table_bboxes_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[list[float]]]:
-    grouped: dict[int, list[list[float]]] = defaultdict(list)
+def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for table in table_items:
         page_no = int(table.get("page_no") or 0)
         bbox = table.get("bbox")
         if page_no and isinstance(bbox, list) and len(bbox) >= 4:
-            grouped[page_no].append([float(value) for value in bbox[:4]])
+            grouped[page_no].append(
+                {
+                    "bbox": [float(value) for value in bbox[:4]],
+                    "cell_signatures": _table_cell_signatures(table.get("rows") or []),
+                }
+            )
     return grouped
 
 
-def _block_inside_any_table(block: PdfTextBlock, table_bboxes: dict[int, list[list[float]]]) -> bool:
+def _table_cell_signatures(rows: list[list[Any]]) -> set[str]:
+    signatures: set[str] = set()
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for cell in row:
+            signature = _text_signature(str(cell or ""))
+            if signature:
+                signatures.add(signature)
+    return signatures
+
+
+def _block_text_matches_table_cell(block_text: str, cell_signatures: set[str]) -> bool:
+    signature = _text_signature(block_text)
+    if not signature:
+        return False
+    return any(signature == cell or signature in cell or cell in signature for cell in cell_signatures)
+
+
+def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
     if not block.bbox or len(block.bbox) < 4:
         return False
     x0, y0, x1, y1 = [float(value) for value in block.bbox[:4]]
     center_x = (x0 + x1) / 2
     center_y = (y0 + y1) / 2
-    for tx0, ty0, tx1, ty1 in table_bboxes.get(int(block.page_no), []):
-        if tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1:
+    for region in table_regions.get(int(block.page_no), []):
+        tx0, ty0, tx1, ty1 = region["bbox"]
+        if tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1 and _block_text_matches_table_cell(block.text, region["cell_signatures"]):
             return True
     return False
 
@@ -671,13 +696,14 @@ def _backfill_missing_material_indexes(root_dir: Path) -> None:
         reverse=True,
     )
     for directory in directories:
-        if (directory / "material.md").exists():
-            continue
         child_entries = [
             (child.name, child / "material.md")
             for child in sorted(directory.iterdir(), key=lambda item: item.name)
             if child.is_dir() and (child / "material.md").exists()
         ]
+        if (directory / "material.md").exists():
+            _append_child_links_to_markdown(directory, child_entries)
+            continue
         has_metadata = any(
             (directory / filename).exists()
             for filename in ("module_meta.json", "section_meta.json", "compound_instance_meta.json", "compound_materials_manifest.json")
@@ -2002,9 +2028,14 @@ def _append_child_links_to_markdown(material_dir: Path, entries: list[tuple[str,
         return
     markdown_path = material_dir / "material.md"
     current = markdown_path.read_text(encoding="utf-8").rstrip() if markdown_path.exists() else f"# {material_dir.name}"
+    current = _strip_child_links_section(current)
     lines = [current, "", "## 子章节", ""]
     lines.extend(f"- [{title}]({_relative_markdown_path(material_dir, path)})" for title, path in entries)
     markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _strip_child_links_section(markdown: str) -> str:
+    return re.split(r"\n## 子章节\n", markdown.rstrip(), maxsplit=1)[0].rstrip()
 
 
 def _write_parent_preface_packages(

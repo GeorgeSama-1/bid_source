@@ -3,7 +3,7 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
-from bid_knowledge.parsing.module_packager import package_module_artifacts
+from bid_knowledge.parsing.module_packager import _backfill_missing_material_indexes, package_module_artifacts
 from bid_knowledge.schemas.models import PageMaterialItem, ParsedTable, PdfTextBlock, ReusableCandidate
 
 
@@ -1261,6 +1261,40 @@ def test_package_module_artifacts_omits_text_blocks_inside_rendered_table(tmp_pa
     assert material_md.count("2024") == 1
 
 
+def test_package_module_artifacts_keeps_table_caption_even_when_inside_table_bbox(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 财务状况",
+            1,
+            1,
+            "财务状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="财务状况", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(block_id="caption", page_no=1, text="表1 近三年财务状况汇总表", bbox=[20, 172, 260, 188], block_no=2),
+        PdfTextBlock(block_id="cell1", page_no=1, text="年份", bbox=[20, 202, 80, 218], block_no=3),
+        PdfTextBlock(block_id="cell2", page_no=1, text="2024", bbox=[90, 202, 140, 218], block_no=4),
+    ]
+    tables = [
+        ParsedTable(table_id="finance-table", page_no=1, rows=[["年份", "金额"], ["2024", "100"]], bbox=[10, 165, 300, 250]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "财务状况" / "material.md").read_text(encoding="utf-8")
+    assert "表1 近三年财务状况汇总表" in material_md
+    assert "| 年份 | 金额 |" in material_md
+    assert material_md.count("年份") == 1
+    assert material_md.count("2024") == 1
+
+
 def test_package_module_artifacts_keeps_parent_preface_before_first_child_section(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -1312,6 +1346,78 @@ def test_package_module_artifacts_keeps_parent_preface_before_first_child_sectio
     assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
     assert "2022 年度报告正文" in child_md
     assert "投标人近三年财务状况如下。" not in child_md
+
+
+def test_package_module_artifacts_keeps_all_child_links_when_parent_has_preface(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "PDF / 3、 补充文件 / 3.7、 财务状况 / 3.7.1、 2022 年度财务审计报告",
+            1,
+            1,
+            "3.7、 财务状况",
+        ),
+        _candidate(
+            "PDF / 3、 补充文件 / 3.7、 财务状况 / 3.7.2、 2023 年度财务审计报告",
+            1,
+            1,
+            "3.7、 财务状况",
+        ),
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 240.0, "end_y": 360.0, "start_block_id": "child-2022", "end_block_id": "child-2023"}
+    candidates[1].material_evidence = {"source": "pdf_toc_leaf", "start_y": 360.0, "end_y": None, "start_block_id": "child-2023"}
+    blocks = [
+        PdfTextBlock(block_id="parent-title", page_no=1, text="3.7、财务状况", bbox=[0, 100, 200, 120], block_no=1),
+        PdfTextBlock(block_id="preface", page_no=1, text="投标人近三年财务状况如下。", bbox=[0, 150, 400, 170], block_no=2),
+        PdfTextBlock(block_id="child-2022", page_no=1, text="3.7.1、2022 年度财务审计报告", bbox=[0, 240, 400, 260], block_no=3),
+        PdfTextBlock(block_id="body-2022", page_no=1, text="2022 年度报告正文", bbox=[0, 280, 400, 300], block_no=4),
+        PdfTextBlock(block_id="child-2023", page_no=1, text="3.7.2、2023 年度财务审计报告", bbox=[0, 360, 400, 380], block_no=5),
+        PdfTextBlock(block_id="body-2023", page_no=1, text="2023 年度报告正文", bbox=[0, 400, 400, 420], block_no=6),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path for candidate in candidates],
+    )
+
+    parent_md = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.7、 财务状况"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "投标人近三年财务状况如下。" in parent_md
+    assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
+    assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
+
+
+def test_backfill_refreshes_child_links_when_parent_markdown_already_exists(tmp_path: Path) -> None:
+    parent_dir = tmp_path / "modules" / "3.7、 财务状况"
+    child_2022 = parent_dir / "3.7.1、 2022 年度财务审计报告"
+    child_2023 = parent_dir / "3.7.2、 2023 年度财务审计报告"
+    child_2022.mkdir(parents=True)
+    child_2023.mkdir(parents=True)
+    (child_2022 / "material.md").write_text("# 2022\n", encoding="utf-8")
+    (child_2023 / "material.md").write_text("# 2023\n", encoding="utf-8")
+    (parent_dir / "material.md").write_text(
+        "# 3.7、 财务状况\n\n投标人近三年财务状况如下。\n\n## 子章节\n\n"
+        "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)\n",
+        encoding="utf-8",
+    )
+
+    _backfill_missing_material_indexes(tmp_path / "modules")
+
+    parent_md = (parent_dir / "material.md").read_text(encoding="utf-8")
+    assert "投标人近三年财务状况如下。" in parent_md
+    assert parent_md.count("## 子章节") == 1
+    assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
+    assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
 
 
 def test_package_module_artifacts_renders_field_value_text_blocks_as_table(tmp_path: Path) -> None:
