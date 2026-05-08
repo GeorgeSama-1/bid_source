@@ -20,7 +20,6 @@ from bid_knowledge.parsing.ocr_client import run_ocr
 from bid_knowledge.parsing.ocr_merger import merge_ocr_results
 from bid_knowledge.parsing.module_packager import package_module_artifacts
 from bid_knowledge.parsing.pdf_parser import parse_pdf, render_pdf_pages
-from bid_knowledge.parsing.pp_toc_packager import package_pp_toc_materials
 from bid_knowledge.parsing.pp_structure import run_pp_structure
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
@@ -489,74 +488,6 @@ def pdf_toc_pipeline_command(
     )
     write_json(root / "pdf_toc_pipeline_manifest.json", manifest)
     typer.echo(f"PDF TOC pipeline completed -> {root}")
-
-
-@app.command("pp-toc-pipeline")
-def pp_toc_pipeline_command(
-    pdf: str = typer.Option(..., "--pdf"),
-    out_dir: str = typer.Option(..., "--out-dir"),
-    path_root: str = typer.Option("PDF", "--path-root"),
-    pp_structure_device: str = typer.Option("gpu", "--pp-structure-device"),
-    pp_structure_use_doc_orientation_classify: str = typer.Option("false", "--pp-structure-use-doc-orientation-classify"),
-    pp_structure_use_doc_unwarping: str = typer.Option("false", "--pp-structure-use-doc-unwarping"),
-    pp_structure_use_textline_orientation: str = typer.Option("false", "--pp-structure-use-textline-orientation"),
-    progress: str = typer.Option("true", "--progress"),
-) -> None:
-    show_progress = _parse_bool_flag(progress)
-    total_steps = 5
-    root = ensure_dir(out_dir)
-    parsed_dir = ensure_dir(root / "parsed")
-    candidates_dir = ensure_dir(root / "candidates")
-    ensure_dir(root / "modules")
-
-    _pipeline_echo(1, total_steps, "Parsing PDF TOC and page anchors")
-    with _make_progress_callback(show_progress, "Parsing PDF pages") as progress_callback:
-        parsed = parse_pdf(pdf, plan=None, out_dir=parsed_dir, progress_callback=progress_callback)
-
-    toc = list(parsed.get("toc") or [])
-    page_count = _document_page_count(parsed)
-    if not toc:
-        raise typer.BadParameter("当前 PDF 没有可用目录，无法按目录叶子章节展开。")
-
-    _pipeline_echo(2, total_steps, "Running PP-StructureV3 as primary layout stream")
-    with _make_progress_callback(show_progress, "Running PP-StructureV3") as progress_callback:
-        pp_structure_results = run_pp_structure(
-            pdf,
-            out_path=parsed_dir / "pp_structure_results.json",
-            device=pp_structure_device,
-            use_doc_orientation_classify=_parse_bool_flag(pp_structure_use_doc_orientation_classify),
-            use_doc_unwarping=_parse_bool_flag(pp_structure_use_doc_unwarping),
-            use_textline_orientation=_parse_bool_flag(pp_structure_use_textline_orientation),
-            progress_callback=progress_callback,
-        )
-
-    _pipeline_echo(3, total_steps, "Building TOC leaf sections")
-    blocks = _load_blocks(parsed_dir / "text_blocks.json")
-    candidates = build_toc_leaf_candidates(
-        toc=toc,
-        page_count=page_count,
-        path_root=path_root,
-        company_id="pdf",
-        document_id=Path(pdf).stem,
-        blocks=blocks,
-    )
-    for candidate in candidates:
-        candidate.source_file = str(pdf)
-    write_json(candidates_dir / "toc_leaf_candidates.json", candidates)
-    planned_paths = toc_leaf_section_paths(candidates)
-    write_json(candidates_dir / "toc_leaf_section_paths.json", planned_paths)
-
-    _pipeline_echo(4, total_steps, "Packaging PP TOC materials")
-    manifest = package_pp_toc_materials(
-        candidates=candidates,
-        pp_structure_results=pp_structure_results,
-        out_dir=root,
-        pdf_path=pdf,
-    )
-
-    _pipeline_echo(5, total_steps, "Pipeline finished")
-    write_json(root / "pp_toc_pipeline_manifest.json", manifest)
-    typer.echo(f"PP TOC pipeline completed -> {root}")
 
 
 @app.command("build-chunks")
