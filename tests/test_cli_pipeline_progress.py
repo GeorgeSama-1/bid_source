@@ -6,6 +6,7 @@ from bid_knowledge import cli
 from bid_knowledge.schemas.models import (
     ManualConfig,
     PageMaterialItem,
+    ParsedTable,
     PdfTextBlock,
     ProcessingPlan,
     ProcessingPlanItem,
@@ -134,3 +135,77 @@ def test_run_pp_structure_command_reports_page_count(monkeypatch, tmp_path: Path
 
     assert result.exit_code == 0
     assert "PP-StructureV3 finished for 1 pages" in result.output
+
+
+def test_pdf_toc_pipeline_prefers_pp_structure_tables_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    block = PdfTextBlock(
+        block_id="block-1",
+        page_no=1,
+        text="1、测试章节",
+        bbox=[10, 20, 200, 40],
+        block_no=1,
+    )
+    candidate = cli.ReusableCandidate(
+        candidate_id="cand-1",
+        company_id="pdf",
+        document_id="demo",
+        rule_id="toc-1",
+        section_path="商务文件 / 1、测试章节",
+        title="1、测试章节",
+        content="",
+        candidate_type="attachment",
+        reuse_method="附件召回",
+        reuse_level="long_term",
+        enter_long_term_library=True,
+        source_file="demo.pdf",
+        source_page=1,
+        source_page_end=1,
+        source_container_title="1、测试章节",
+    )
+    pp_table = ParsedTable(
+        table_id="pp-table-1",
+        page_no=1,
+        rows=[["字段", "内容"]],
+        bbox=[20, 80, 400, 200],
+        source_type="pp_structure_table",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf(*_, out_dir=None, **__):
+        out = Path(out_dir)
+        write_json(out / "text_blocks.json", [block])
+        write_json(out / "images.json", [])
+        return {"toc": [{"title": "1、测试章节", "page": 1, "level": 1}], "document_meta": {"page_count": 1}}
+
+    monkeypatch.setattr(cli, "parse_pdf", fake_parse_pdf)
+    monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: (_ for _ in ()).throw(AssertionError("pdfplumber should not run")))
+    monkeypatch.setattr(cli, "run_pp_structure", lambda *_, **__: [{"res": {"page_index": 0}, "page_index": 0}])
+    monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [pp_table])
+    monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
+    monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
+    monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
+    monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
+    monkeypatch.setattr(cli, "build_combined_page_material_stream", lambda **_: [])
+
+    def fake_package_module_artifacts(**kwargs):
+        captured["tables"] = kwargs["tables"]
+        return {"sections": []}
+
+    monkeypatch.setattr(cli, "package_module_artifacts", fake_package_module_artifacts)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "pdf-toc-pipeline",
+            "--pdf",
+            "demo.pdf",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--enable-pp-structure",
+            "true",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["tables"] == [pp_table]

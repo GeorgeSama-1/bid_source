@@ -92,7 +92,7 @@ class ParsedTable(ModelBase):
     page_no: int
     rows: list[list[str]] = Field(default_factory=list)
     bbox: list[float] | None = None
-    source_type: Literal["pdf_table"] = "pdf_table"
+    source_type: Literal["pdf_table", "pp_structure_table"] = "pdf_table"
 
 
 class OCRBlock(ModelBase):

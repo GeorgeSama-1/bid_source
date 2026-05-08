@@ -21,6 +21,7 @@ from bid_knowledge.parsing.ocr_merger import merge_ocr_results
 from bid_knowledge.parsing.module_packager import package_module_artifacts
 from bid_knowledge.parsing.pdf_parser import parse_pdf, render_pdf_pages
 from bid_knowledge.parsing.pp_structure import run_pp_structure
+from bid_knowledge.parsing.pp_table_extractor import extract_pp_structure_tables
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
 from bid_knowledge.parsing.toc_leaf_builder import (
@@ -423,13 +424,9 @@ def pdf_toc_pipeline_command(
     if not toc:
         raise typer.BadParameter("当前 PDF 没有可用目录，无法按目录叶子章节展开。")
 
-    _pipeline_echo(2, total_steps, "Extracting tables")
-    with _make_progress_callback(show_progress, "Extracting tables") as progress_callback:
-        tables = extract_tables(pdf, plan=None, out_path=parsed_dir / "tables.json", progress_callback=progress_callback)
-
     pp_structure_results: list[dict[str, Any]] = []
     if pp_structure_enabled:
-        _pipeline_echo(3, total_steps, "Running PP-StructureV3 for positioning")
+        _pipeline_echo(2, total_steps, "Running PP-StructureV3 for positioning")
         with _make_progress_callback(show_progress, "Running PP-StructureV3") as progress_callback:
             pp_structure_results = run_pp_structure(
                 pdf,
@@ -441,10 +438,18 @@ def pdf_toc_pipeline_command(
                 progress_callback=progress_callback,
             )
     else:
-        _pipeline_echo(3, total_steps, "PP-StructureV3 disabled; using PDF-native positioning only")
+        _pipeline_echo(2, total_steps, "PP-StructureV3 disabled; using PDF-native positioning only")
         write_json(parsed_dir / "pp_structure_results.json", [])
     layout_masks = build_layout_masks(pp_structure_results)
     write_json(parsed_dir / "page_layout_masks.json", layout_masks)
+
+    if pp_structure_enabled:
+        _pipeline_echo(3, total_steps, "Extracting PP-Structure tables")
+        tables = extract_pp_structure_tables(pp_structure_results, out_path=parsed_dir / "tables.json")
+    else:
+        _pipeline_echo(3, total_steps, "Extracting PDF-native tables")
+        with _make_progress_callback(show_progress, "Extracting tables") as progress_callback:
+            tables = extract_tables(pdf, plan=None, out_path=parsed_dir / "tables.json", progress_callback=progress_callback)
 
     _pipeline_echo(4, total_steps, "Building TOC leaf sections")
     blocks = _load_blocks(parsed_dir / "text_blocks.json")

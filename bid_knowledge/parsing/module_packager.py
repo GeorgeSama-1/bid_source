@@ -409,6 +409,8 @@ def _ordered_material_items(
         item_type = str(stream_item.get("item_type") or stream_item.get("type") or "")
         if item_type not in {"text", "table", "image"}:
             continue
+        if item_type == "table" and _page_material_table_duplicates_table_item(stream_item, table_items):
+            continue
         if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
         bbox = stream_item.get("bbox") or []
@@ -446,6 +448,23 @@ def _ordered_material_items(
     return sorted_items
 
 
+def _page_material_table_duplicates_table_item(stream_item: dict[str, Any], table_items: list[dict[str, Any]]) -> bool:
+    bbox = stream_item.get("bbox") or []
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return False
+    page_no = int(stream_item.get("page_no") or 0)
+    stream_bbox = [float(value) for value in bbox[:4]]
+    for table in table_items:
+        table_bbox = table.get("bbox")
+        if int(table.get("page_no") or 0) != page_no:
+            continue
+        if not isinstance(table_bbox, list) or len(table_bbox) < 4:
+            continue
+        if _bbox_overlap_ratio(stream_bbox, [float(value) for value in table_bbox[:4]]) >= 0.8:
+            return True
+    return False
+
+
 def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for table in table_items:
@@ -456,6 +475,7 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
                 {
                     "bbox": [float(value) for value in bbox[:4]],
                     "cell_signatures": _table_cell_signatures(table.get("rows") or []),
+                    "source_type": str(table.get("source_type") or ""),
                 }
             )
     return grouped
@@ -483,6 +503,8 @@ def _block_text_matches_table_cell(block_text: str, cell_signatures: set[str]) -
 def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
     if not block.bbox or len(block.bbox) < 4:
         return False
+    if _looks_like_table_caption(block.text):
+        return False
     block_bbox = [float(value) for value in block.bbox[:4]]
     x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
@@ -491,8 +513,28 @@ def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[d
         tx0, ty0, tx1, ty1 = region["bbox"]
         inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
         inside_by_overlap = _bbox_overlap_ratio(block_bbox, region["bbox"]) >= 0.15
+        if str(region.get("source_type") or "").startswith("pp_structure") and (inside_by_center or inside_by_overlap):
+            return True
         if (inside_by_center or inside_by_overlap) and _block_text_matches_table_cell(block.text, region["cell_signatures"]):
             return True
+    return False
+
+
+def _looks_like_table_caption(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    compact = re.sub(r"\s+", "", stripped)
+    if len(compact) > 100:
+        return False
+    if re.match(r"^表[\d一二三四五六七八九十]+[：:、.．]?", compact):
+        return True
+    if compact.startswith("《") and compact.endswith("》") and "表" in compact:
+        return True
+    if compact.endswith("表") and len(compact) <= 60:
+        return True
+    if re.match(r"^单位[：:]", compact):
+        return True
     return False
 
 

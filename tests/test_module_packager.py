@@ -2308,3 +2308,141 @@ def test_package_module_artifacts_preserves_cross_page_material_stream_order(tmp
     assert [item["item_type"] for item in stream_items] == ["text", "image", "table"]
     assert stream_items[0]["text"] == "第一页授权正文"
     assert stream_items[0]["payload"]["ocr_texts"] == ["第一页授权正文"]
+
+
+def test_pp_structure_table_region_filters_duplicate_pdf_text_but_keeps_caption(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 3、补充文件 / 3.2、投标人与国家电网公司系统人员关系说明",
+            1,
+            1,
+            "3.2、投标人与国家电网公司系统人员关系说明",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="title",
+            page_no=1,
+            text="3.2、投标人与国家电网公司系统人员关系说明",
+            bbox=[20, 40, 500, 60],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="intro",
+            page_no=1,
+            text="具体情况如下。",
+            bbox=[20, 80, 240, 100],
+            block_no=2,
+        ),
+        PdfTextBlock(
+            block_id="caption",
+            page_no=1,
+            text="《本企业员工与国家电网公司系统人员关系说明表》",
+            bbox=[110, 122, 420, 142],
+            block_no=3,
+        ),
+        PdfTextBlock(
+            block_id="cell-text-1",
+            page_no=1,
+            text="本企业人员基本信息",
+            bbox=[50, 165, 180, 185],
+            block_no=4,
+        ),
+        PdfTextBlock(
+            block_id="cell-text-2",
+            page_no=1,
+            text="国家电网公司系统人员基本信息",
+            bbox=[260, 165, 470, 185],
+            block_no=5,
+        ),
+        PdfTextBlock(
+            block_id="after",
+            page_no=1,
+            text="1.本表的人员只统计企业法人、出资人、高管涉及的具体情形。",
+            bbox=[20, 370, 560, 390],
+            block_no=6,
+        ),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="pp-table-1",
+            page_no=1,
+            rows=[],
+            bbox=[40, 120, 560, 350],
+            source_type="pp_structure_table",
+            table_content="<table><tr><td>本企业人员基本信息</td></tr></table>",
+            source_detail="layout_det_res",
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material = (
+        tmp_path
+        / "modules"
+        / "3、补充文件"
+        / "3.2、投标人与国家电网公司系统人员关系说明"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "具体情况如下。" in material
+    assert "《本企业员工与国家电网公司系统人员关系说明表》" in material
+    assert "[表格：" in material
+    assert "1.本表的人员只统计企业法人、出资人、高管涉及的具体情形。" in material
+    assert "本企业人员基本信息" not in material
+    assert "国家电网公司系统人员基本信息" not in material
+
+
+def test_ordered_material_skips_pp_structure_table_region_when_table_item_exists(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 1、测试章节",
+            1,
+            1,
+            "1、测试章节",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="1、测试章节", bbox=[20, 40, 200, 60], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="pp-table-1",
+            page_no=1,
+            rows=[["字段", "内容"]],
+            bbox=[20, 100, 420, 240],
+            source_type="pp_structure_table",
+        )
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-table-region-1",
+            item_type="table",
+            source_type="pp_structure_table_region",
+            page_no=1,
+            top_y=100,
+            bbox=[21, 101, 421, 241],
+            payload={"layout_label": "table"},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material = (tmp_path / "modules" / "1、测试章节" / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((tmp_path / "modules" / "1、测试章节" / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert material.count("| 字段 | 内容 |") == 1
+    assert sum(1 for item in ordered["items"] if item["item_type"] == "table") == 1
