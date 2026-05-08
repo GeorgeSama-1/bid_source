@@ -29,6 +29,7 @@ from bid_knowledge.parsing.toc_leaf_builder import (
     toc_leaf_section_paths,
     top_level_modules_from_toc_candidates,
 )
+from bid_knowledge.parsing.vlm_table_extractor import enhance_tables_with_vlm
 from bid_knowledge.retrieval.bm25_retriever import BM25Retriever, load_chunks
 from bid_knowledge.retrieval.retrieval_eval import evaluate_retrieval
 from bid_knowledge.retrieval.vector_retriever import VectorRetriever
@@ -405,11 +406,16 @@ def pdf_toc_pipeline_command(
     pp_structure_use_doc_orientation_classify: str = typer.Option("false", "--pp-structure-use-doc-orientation-classify"),
     pp_structure_use_doc_unwarping: str = typer.Option("false", "--pp-structure-use-doc-unwarping"),
     pp_structure_use_textline_orientation: str = typer.Option("false", "--pp-structure-use-textline-orientation"),
+    enable_vlm_table: str = typer.Option("false", "--enable-vlm-table"),
+    vlm_table_endpoint: Optional[str] = typer.Option(None, "--vlm-table-endpoint"),
+    vlm_table_model: Optional[str] = typer.Option(None, "--vlm-table-model"),
+    vlm_table_api_key: Optional[str] = typer.Option(None, "--vlm-table-api-key"),
     progress: str = typer.Option("true", "--progress"),
 ) -> None:
     pp_structure_enabled = _parse_bool_flag(enable_pp_structure)
+    vlm_table_enabled = _parse_bool_flag(enable_vlm_table)
     show_progress = _parse_bool_flag(progress)
-    total_steps = 6
+    total_steps = 7 if vlm_table_enabled else 6
     root = ensure_dir(out_dir)
     parsed_dir = ensure_dir(root / "parsed")
     candidates_dir = ensure_dir(root / "candidates")
@@ -455,7 +461,21 @@ def pdf_toc_pipeline_command(
         with _make_progress_callback(show_progress, "Extracting tables") as progress_callback:
             tables = extract_tables(pdf, plan=None, out_path=parsed_dir / "tables.json", progress_callback=progress_callback)
 
-    _pipeline_echo(4, total_steps, "Building TOC leaf sections")
+    if vlm_table_enabled:
+        _pipeline_echo(4, total_steps, "Enhancing tables with PaddleOCR-VL")
+        with _make_progress_callback(show_progress, "Enhancing tables with PaddleOCR-VL") as progress_callback:
+            tables = enhance_tables_with_vlm(
+                pdf_path=pdf,
+                tables=tables,
+                out_dir=parsed_dir / "vlm_tables",
+                endpoint=vlm_table_endpoint,
+                model=vlm_table_model,
+                api_key=vlm_table_api_key,
+                progress_callback=progress_callback,
+            )
+        write_json(parsed_dir / "tables.json", tables)
+
+    _pipeline_echo(5 if vlm_table_enabled else 4, total_steps, "Building TOC leaf sections")
     blocks = _load_blocks(parsed_dir / "text_blocks.json")
     candidates = build_toc_leaf_candidates(
         toc=toc,
@@ -471,7 +491,7 @@ def pdf_toc_pipeline_command(
     planned_paths = toc_leaf_section_paths(candidates)
     write_json(candidates_dir / "toc_leaf_section_paths.json", planned_paths)
 
-    _pipeline_echo(5, total_steps, "Building page material stream")
+    _pipeline_echo(6 if vlm_table_enabled else 5, total_steps, "Building page material stream")
     images = _load_images(parsed_dir / "images.json")
     page_material_stream = _build_page_material_stream_payload(
         blocks=blocks,
@@ -481,7 +501,7 @@ def pdf_toc_pipeline_command(
     )
     write_json(parsed_dir / "page_material_stream.json", page_material_stream)
 
-    _pipeline_echo(6, total_steps, "Packaging TOC leaf materials")
+    _pipeline_echo(7 if vlm_table_enabled else 6, total_steps, "Packaging TOC leaf materials")
     manifest = package_module_artifacts(
         candidates=candidates,
         blocks=blocks,

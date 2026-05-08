@@ -216,3 +216,87 @@ def test_pdf_toc_pipeline_merges_pdf_tables_when_pp_structure_misses_them(monkey
 
     assert result.exit_code == 0
     assert captured["tables"] == [pp_table, pdf_table]
+
+
+def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    block = PdfTextBlock(block_id="block-1", page_no=1, text="1、测试章节", bbox=[10, 20, 200, 40], block_no=1)
+    table = ParsedTable(table_id="table-1", page_no=1, rows=[], bbox=[20, 80, 400, 200])
+    enhanced_table = ParsedTable(
+        table_id="table-1",
+        page_no=1,
+        rows=[["272608"]],
+        bbox=[20, 80, 400, 200],
+        table_model_source="paddleocr_vl",
+    )
+    candidate = cli.ReusableCandidate(
+        candidate_id="cand-1",
+        company_id="pdf",
+        document_id="demo",
+        rule_id="toc-1",
+        section_path="商务文件 / 1、测试章节",
+        title="1、测试章节",
+        content="",
+        candidate_type="attachment",
+        reuse_method="附件召回",
+        reuse_level="long_term",
+        enter_long_term_library=True,
+        source_file="demo.pdf",
+        source_page=1,
+        source_page_end=1,
+        source_container_title="1、测试章节",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf(*_, out_dir=None, **__):
+        out = Path(out_dir)
+        write_json(out / "text_blocks.json", [block])
+        write_json(out / "images.json", [])
+        return {"toc": [{"title": "1、测试章节", "page": 1, "level": 1}], "document_meta": {"page_count": 1}}
+
+    monkeypatch.setattr(cli, "parse_pdf", fake_parse_pdf)
+    monkeypatch.setattr(cli, "run_pp_structure", lambda *_, **__: [])
+    monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
+    monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: [table])
+    monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [])
+    monkeypatch.setattr(cli, "merge_pp_and_pdf_tables", lambda _pp, pdf: pdf)
+    monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
+    monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
+    monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
+    monkeypatch.setattr(cli, "build_combined_page_material_stream", lambda **_: [])
+
+    def fake_enhance_tables_with_vlm(**kwargs):
+        captured["vlm_endpoint"] = kwargs["endpoint"]
+        captured["vlm_model"] = kwargs["model"]
+        return [enhanced_table]
+
+    def fake_package_module_artifacts(**kwargs):
+        captured["tables"] = kwargs["tables"]
+        return {"sections": []}
+
+    monkeypatch.setattr(cli, "enhance_tables_with_vlm", fake_enhance_tables_with_vlm)
+    monkeypatch.setattr(cli, "package_module_artifacts", fake_package_module_artifacts)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "pdf-toc-pipeline",
+            "--pdf",
+            "demo.pdf",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--enable-pp-structure",
+            "true",
+            "--enable-vlm-table",
+            "true",
+            "--vlm-table-endpoint",
+            "http://172.20.0.160:8118/v1/chat/completions",
+            "--vlm-table-model",
+            "PaddleOCR-VL-1.5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["vlm_endpoint"] == "http://172.20.0.160:8118/v1/chat/completions"
+    assert captured["vlm_model"] == "PaddleOCR-VL-1.5"
+    assert captured["tables"] == [enhanced_table]

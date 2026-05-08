@@ -7,6 +7,8 @@ def test_extract_pp_structure_tables_keeps_table_content_and_skips_duplicate_lay
         {
             "res": {
                 "page_index": 0,
+                "width": 1684,
+                "height": 1191,
                 "parsing_res_list": [
                     {
                         "block_label": "table",
@@ -38,6 +40,8 @@ def test_extract_pp_structure_tables_keeps_table_content_and_skips_duplicate_lay
     assert tables[0].source_type == "pp_structure_table"
     assert tables[0].table_content == "<table><tr><td>姓名</td><td>岗位</td></tr></table>"
     assert tables[0].source_detail == "parsing_res_list"
+    assert tables[0].page_width == 1684
+    assert tables[0].page_height == 1191
     assert tables[0].table_model["row_count"] == 1
     assert tables[0].table_model["col_count"] == 2
     assert tables[0].table_model["cells"][0]["text"] == "姓名"
@@ -98,6 +102,8 @@ def test_extract_pp_structure_tables_uses_layout_boxes_when_structured_content_i
         {
             "res": {
                 "page_index": 2,
+                "width": 1684,
+                "height": 1191,
                 "parsing_res_list": [],
                 "layout_det_res": {
                     "boxes": [
@@ -121,6 +127,8 @@ def test_extract_pp_structure_tables_uses_layout_boxes_when_structured_content_i
     assert tables[0].rows == []
     assert tables[0].source_type == "pp_structure_table"
     assert tables[0].source_detail == "layout_det_res"
+    assert tables[0].page_width == 1684
+    assert tables[0].page_height == 1191
     assert tables[0].table_model["source"] == "pp_structure_layout"
     assert tables[0].table_model["row_count"] == 0
 

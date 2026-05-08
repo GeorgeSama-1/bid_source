@@ -81,6 +81,8 @@ def extract_pp_structure_tables(
         if not isinstance(payload, dict):
             continue
         page_no = _page_no(result, payload)
+        page_width = payload.get("width")
+        page_height = payload.get("height")
 
         for block_index, block in enumerate(payload.get("parsing_res_list") or [], start=1):
             if not isinstance(block, dict) or str(block.get("block_label") or "") != "table":
@@ -103,6 +105,8 @@ def extract_pp_structure_tables(
                     source_detail="parsing_res_list",
                     pp_block_id=block.get("block_id"),
                     pp_block_order=block.get("block_order"),
+                    page_width=page_width,
+                    page_height=page_height,
                 )
             )
 
@@ -126,6 +130,8 @@ def extract_pp_structure_tables(
                     table_model=build_table_model_from_rows([], source="pp_structure_layout", bbox=bbox),
                     source_detail="layout_det_res",
                     pp_score=box.get("score"),
+                    page_width=page_width,
+                    page_height=page_height,
                 )
             )
 
