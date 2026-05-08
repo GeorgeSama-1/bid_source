@@ -483,14 +483,33 @@ def _block_text_matches_table_cell(block_text: str, cell_signatures: set[str]) -
 def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
     if not block.bbox or len(block.bbox) < 4:
         return False
-    x0, y0, x1, y1 = [float(value) for value in block.bbox[:4]]
+    block_bbox = [float(value) for value in block.bbox[:4]]
+    x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
     center_y = (y0 + y1) / 2
     for region in table_regions.get(int(block.page_no), []):
         tx0, ty0, tx1, ty1 = region["bbox"]
-        if tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1 and _block_text_matches_table_cell(block.text, region["cell_signatures"]):
+        inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
+        inside_by_overlap = _bbox_overlap_ratio(block_bbox, region["bbox"]) >= 0.15
+        if (inside_by_center or inside_by_overlap) and _block_text_matches_table_cell(block.text, region["cell_signatures"]):
             return True
     return False
+
+
+def _bbox_overlap_ratio(bbox: list[float], other: list[float]) -> float:
+    if len(bbox) < 4 or len(other) < 4:
+        return 0.0
+    x0, y0, x1, y1 = bbox[:4]
+    ox0, oy0, ox1, oy1 = other[:4]
+    ix0 = max(x0, ox0)
+    iy0 = max(y0, oy0)
+    ix1 = min(x1, ox1)
+    iy1 = min(y1, oy1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    intersection = (ix1 - ix0) * (iy1 - iy0)
+    area = max((x1 - x0) * (y1 - y0), 1.0)
+    return intersection / area
 
 
 def _material_path(parts: list[str]) -> str:
@@ -549,6 +568,22 @@ def _render_table_markdown(rows: list[list[Any]]) -> str:
     ]
     lines.extend("| " + " | ".join(row) + " |" for row in body)
     return "\n".join(lines)
+
+
+def _should_inline_table_markdown(rows: list[list[Any]]) -> bool:
+    if not rows:
+        return False
+    width = max((len(row) for row in rows if isinstance(row, list)), default=0)
+    if width == 0:
+        return False
+    cells = [str(cell or "").strip() for row in rows if isinstance(row, list) for cell in row if str(cell or "").strip()]
+    if not cells:
+        return False
+    average_len = sum(len(cell) for cell in cells) / len(cells)
+    short_ratio = sum(1 for cell in cells if len(cell) <= 1) / len(cells)
+    if width >= 6 and (average_len <= 1.6 or short_ratio >= 0.65):
+        return False
+    return True
 
 
 def _escape_markdown_table_cell(value: str) -> str:
@@ -653,7 +688,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-                table_markdown = _render_table_markdown(rows)
+                table_markdown = _render_table_markdown(rows) if _should_inline_table_markdown(rows) else ""
                 if table_markdown:
                     lines.extend([table_markdown, ""])
                 else:
@@ -759,6 +794,40 @@ def _write_material_package(
         if allow_submaterials
         else []
     )
+    submaterial_ranges = _submaterial_ranges(submaterial_items)
+    if submaterial_ranges:
+        text_blocks = [
+            block
+            for block in text_blocks
+            if not _item_in_submaterial_ranges(block.page_no, _block_top_y(block), submaterial_ranges)
+        ]
+        table_items = [
+            table
+            for table in table_items
+            if not _item_in_submaterial_ranges(
+                int(table.get("page_no") or 0),
+                float(table.get("_top_y") or 0.0),
+                submaterial_ranges,
+            )
+        ]
+        image_items = [
+            image
+            for image in image_items
+            if not _item_in_submaterial_ranges(
+                int(image.get("page_no") or 0),
+                float(image.get("_top_y") or 0.0),
+                submaterial_ranges,
+            )
+        ]
+        page_material_items = [
+            item
+            for item in page_material_items or []
+            if not _item_in_submaterial_ranges(
+                int(item.get("page_no") or 0),
+                float(item.get("top_y") or 0.0),
+                submaterial_ranges,
+            )
+        ]
     page_material_items = _export_page_material_image_regions(
         material_dir=material_dir,
         section_path=section_path,
@@ -1051,6 +1120,10 @@ def _write_attachment_submaterials(
                 "item_id": make_stable_id("submaterial", f"{section_path}:{anchor.block_id}:{child_title}"),
                 "page_no": anchor.page_no,
                 "top_y": start_y or 0.0,
+                "start_page": start_page,
+                "start_y": start_y,
+                "end_page": end_page,
+                "end_y": end_y,
                 "nearest_heading": anchor.text,
                 "rule_section_path": section_path,
                 "material_path": _material_path(path_parts + [child_title]),
@@ -1058,6 +1131,35 @@ def _write_attachment_submaterials(
             }
         )
     return references
+
+
+def _submaterial_ranges(submaterial_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranges: list[dict[str, Any]] = []
+    for item in submaterial_items:
+        if item.get("start_page") and item.get("end_page"):
+            ranges.append(
+                {
+                    "start_page": int(item["start_page"]),
+                    "start_y": item.get("start_y"),
+                    "end_page": int(item["end_page"]),
+                    "end_y": item.get("end_y"),
+                }
+            )
+    return ranges
+
+
+def _item_in_submaterial_ranges(page_no: int, top_y: float | None, ranges: list[dict[str, Any]]) -> bool:
+    return any(
+        _item_in_range(
+            page_no,
+            top_y,
+            int(item["start_page"]),
+            item.get("start_y"),
+            int(item["end_page"]),
+            item.get("end_y"),
+        )
+        for item in ranges
+    )
 
 
 def _safe_dirname(raw: str) -> str:

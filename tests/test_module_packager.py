@@ -1295,6 +1295,74 @@ def test_package_module_artifacts_keeps_table_caption_even_when_inside_table_bbo
     assert material_md.count("2024") == 1
 
 
+def test_package_module_artifacts_omits_overlapping_table_text_even_when_center_outside_bbox(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 财务状况",
+            1,
+            1,
+            "财务状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="财务状况", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(block_id="amount", page_no=1, text="金额", bbox=[280, 202, 360, 218], block_no=2),
+    ]
+    tables = [
+        ParsedTable(table_id="finance-table", page_no=1, rows=[["年份", "金额"], ["2024", "100"]], bbox=[10, 170, 300, 250]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "财务状况" / "material.md").read_text(encoding="utf-8")
+    assert "| 年份 | 金额 |" in material_md
+    assert material_md.count("金额") == 1
+
+
+def test_package_module_artifacts_links_fragmented_wide_table_instead_of_inline_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 财务状况",
+            1,
+            1,
+            "财务状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="财务状况", bbox=[0, 80, 200, 100], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="fragmented-table",
+            page_no=1,
+            rows=[
+                ["序", "号", "项", "目", "名", "称", "金", "额"],
+                ["1", "", "营", "业", "收", "入", "1", "0"],
+                ["2", "", "净", "利", "润", "", "2", "0"],
+            ],
+            bbox=[10, 130, 500, 260],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "财务状况" / "material.md").read_text(encoding="utf-8")
+    assert "[表格：财务状况_表1](table_items/财务状况_表1.json)" in material_md
+    assert "| 序 | 号 | 项 | 目 | 名 | 称 | 金 | 额 |" not in material_md
+
+
 def test_package_module_artifacts_keeps_parent_preface_before_first_child_section(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -1454,6 +1522,51 @@ def test_package_module_artifacts_renders_field_value_text_blocks_as_table(tmp_p
     assert "| 注册地址 | 浙江省宁波市北仑区 |" in material_md
     assert "\n投标人名称：\n" not in material_md
     assert "\n周方洁\n" not in material_md
+
+
+def test_package_module_artifacts_parent_links_attachment_submaterials_without_expanding_child_content(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 法定代表人授权委托书",
+            1,
+            1,
+            "法定代表人授权委托书",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="法定代表人授权委托书", bbox=[0, 80, 240, 100], block_no=1),
+        PdfTextBlock(block_id="body", page_no=1, text="委托代理人办理投标事宜。", bbox=[0, 120, 300, 140], block_no=2),
+        PdfTextBlock(block_id="attach", page_no=1, text="附：法定代表人（单位负责人）身份证（扫描件）", bbox=[0, 200, 400, 220], block_no=3),
+        PdfTextBlock(block_id="child-text", page_no=1, text="身份证号码：3302************", bbox=[0, 250, 400, 270], block_no=4),
+    ]
+    images = [
+        {"image_id": "id-front", "page_no": 1, "xref": 10, "width": 600, "height": 400, "rect": [20, 300, 260, 430], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "法定代表人授权委托书"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    submaterial_md = (
+        material_dir
+        / "submaterials"
+        / "法定代表人（单位负责人）身份证（扫描件）"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "委托代理人办理投标事宜。" in material_md
+    assert "[附：法定代表人（单位负责人）身份证（扫描件）](submaterials/法定代表人（单位负责人）身份证（扫描件）/material.md)" in material_md
+    assert "身份证号码" not in material_md
+    assert "![法定代表人（单位负责人）身份证（扫描件）_图1]" not in material_md
+    assert "身份证号码：3302" in submaterial_md
+    assert "![法定代表人（单位负责人）身份证（扫描件）_图1](image_items/法定代表人（单位负责人）身份证（扫描件）_图1.png)" in submaterial_md
 
 
 def test_package_module_artifacts_renders_full_detected_table_without_dropping_rows_or_columns(tmp_path: Path) -> None:
