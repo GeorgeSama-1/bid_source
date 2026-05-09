@@ -165,6 +165,104 @@ def _normalize_regions_to_pdf_coords(
     return normalized
 
 
+def _image_masks_from_images(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    masks: list[dict[str, Any]] = []
+    for image in images:
+        try:
+            page_no = int(image.get("page_no") or 0)
+        except (TypeError, ValueError):
+            continue
+        for rect in [image.get("rect"), *(image.get("rects") or [])]:
+            bbox = _float_bbox(rect)
+            if bbox:
+                masks.append({"page_no": page_no, "bbox": bbox, "source": "pdf_image", "image_id": image.get("image_id")})
+    return masks
+
+
+def _image_masks_from_pp_structure(pp_structure_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    masks: list[dict[str, Any]] = []
+    for result in pp_structure_results:
+        payload = result.get("res") if isinstance(result.get("res"), dict) else result
+        if not isinstance(payload, dict):
+            continue
+        page_index = result.get("page_index", payload.get("page_index", 0))
+        try:
+            page_no = int(payload.get("page_no") or int(page_index) + 1)
+        except (TypeError, ValueError):
+            page_no = 1
+        page_width = payload.get("width")
+        page_height = payload.get("height")
+        for block in payload.get("parsing_res_list") or []:
+            if not isinstance(block, dict) or str(block.get("block_label") or "") not in {"image", "header_image", "footer_image"}:
+                continue
+            bbox = _float_bbox(block.get("block_bbox") or block.get("bbox"))
+            if bbox:
+                masks.append({"page_no": page_no, "bbox": bbox, "source": "pp_structure", "page_width": page_width, "page_height": page_height})
+        for box in (payload.get("layout_det_res") or {}).get("boxes") or []:
+            if not isinstance(box, dict) or str(box.get("label") or "") not in {"image", "header_image", "footer_image"}:
+                continue
+            bbox = _float_bbox(box.get("coordinate"))
+            if bbox:
+                masks.append({"page_no": page_no, "bbox": bbox, "source": "pp_structure", "page_width": page_width, "page_height": page_height})
+    return masks
+
+
+def _normalize_image_masks_to_pdf_coords(
+    masks: list[dict[str, Any]],
+    page_sizes: dict[int, tuple[float, float]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for mask in masks:
+        page_no = int(mask.get("page_no") or 0)
+        bbox = _float_bbox(mask.get("bbox"))
+        if not bbox:
+            continue
+        page_size = page_sizes.get(page_no)
+        source_width = mask.get("page_width")
+        source_height = mask.get("page_height")
+        if page_size and source_width and source_height:
+            try:
+                scale_x = float(page_size[0]) / float(source_width)
+                scale_y = float(page_size[1]) / float(source_height)
+                bbox = _scale_bbox(bbox, scale_x, scale_y)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        normalized.append({**mask, "bbox": bbox})
+    return normalized
+
+
+def _filter_regions_overlapping_images(
+    regions: list[CandidateTableRegion],
+    images: list[dict[str, Any]],
+    pp_structure_results: list[dict[str, Any]] | None = None,
+    *,
+    page_sizes: dict[int, tuple[float, float]] | None = None,
+    overlap_threshold: float = 0.65,
+) -> list[CandidateTableRegion]:
+    page_sizes = page_sizes or {}
+    masks = _image_masks_from_images(images)
+    masks.extend(_image_masks_from_pp_structure(pp_structure_results or []))
+    masks = _normalize_image_masks_to_pdf_coords(masks, page_sizes)
+    filtered: list[CandidateTableRegion] = []
+    for region in regions:
+        mask = next(
+            (
+                item
+                for item in masks
+                if int(item.get("page_no") or 0) == region.page_no
+                and _bbox_overlap_ratio(region.bbox, item["bbox"]) >= overlap_threshold
+            ),
+            None,
+        )
+        if mask:
+            region.evidence["filtered_reason"] = "overlaps_image"
+            region.evidence["filtered_image_source"] = mask.get("source")
+            region.evidence["filtered_image_id"] = mask.get("image_id")
+            continue
+        filtered.append(region)
+    return filtered
+
+
 def _merge_candidate_regions(
     regions: list[CandidateTableRegion],
     *,
@@ -547,6 +645,7 @@ def detect_candidate_table_regions(
     *,
     pdf_path: str | Path,
     pdf_tables: list[ParsedTable] | None = None,
+    images: list[dict[str, Any]] | None = None,
     pp_structure_results: list[dict[str, Any]] | None = None,
     out_dir: str | Path | None = None,
     expansion_ratio: float = 0.08,
@@ -560,7 +659,14 @@ def detect_candidate_table_regions(
     if progress_callback:
         progress_callback(2, 3)
     raw_regions.extend(_regions_from_pp_structure(pp_structure_results or []))
-    raw_regions = _normalize_regions_to_pdf_coords(raw_regions, _pdf_page_sizes(pdf_path))
+    page_sizes = _pdf_page_sizes(pdf_path)
+    raw_regions = _normalize_regions_to_pdf_coords(raw_regions, page_sizes)
+    raw_regions = _filter_regions_overlapping_images(
+        raw_regions,
+        images or [],
+        pp_structure_results or [],
+        page_sizes=page_sizes,
+    )
     regions = _merge_candidate_regions(raw_regions)
     for region in regions:
         region.expanded_bbox = _expand_bbox(

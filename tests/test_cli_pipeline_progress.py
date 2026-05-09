@@ -391,6 +391,7 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
     def fake_detect_candidate_table_regions(**kwargs):
         captured["table_region_out_dir"] = kwargs["out_dir"]
         captured["pdf_tables"] = kwargs["pdf_tables"]
+        captured["images"] = kwargs["images"]
         return [region]
 
     monkeypatch.setattr(cli, "parse_pdf", fake_parse_pdf)
@@ -427,5 +428,6 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
 
     assert result.exit_code == 0
     assert captured["pdf_tables"] == [table]
+    assert captured["images"] == []
     assert Path(captured["table_region_out_dir"]).name == "table_regions"
     assert captured["tables"] == [region_table]

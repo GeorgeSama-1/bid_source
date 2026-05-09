@@ -3,6 +3,7 @@ from pathlib import Path
 from bid_knowledge.parsing.table_region_detector import (
     CandidateTableGroup,
     CandidateTableRegion,
+    _filter_regions_overlapping_images,
     _line_regions_from_segments,
     _merge_candidate_regions,
     _normalize_regions_to_pdf_coords,
@@ -181,3 +182,44 @@ def test_groups_to_parsed_tables_keeps_cross_page_parts_under_one_group() -> Non
     assert tables[0].table_group_part_index == 1
     assert tables[1].table_group_part_index == 2
     assert tables[0].table_image_path == "page1.png"
+
+
+def test_filter_regions_overlapping_images_drops_image_backed_tables() -> None:
+    regions = [
+        CandidateTableRegion(region_id="image-table", page_no=1, bbox=[10, 100, 300, 260], detectors=["pp_structure"], confidence=0.8),
+        CandidateTableRegion(region_id="native-table", page_no=1, bbox=[10, 300, 300, 460], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 1, "rect": [8, 95, 302, 265]},
+    ]
+
+    filtered = _filter_regions_overlapping_images(regions, images)
+
+    assert [region.region_id for region in filtered] == ["native-table"]
+    assert regions[0].evidence["filtered_reason"] == "overlaps_image"
+
+
+def test_filter_regions_overlapping_pp_structure_image_boxes() -> None:
+    regions = [
+        CandidateTableRegion(region_id="image-table", page_no=2, bbox=[20, 120, 420, 360], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+    pp_results = [
+        {
+            "res": {
+                "page_index": 1,
+                "width": 842,
+                "height": 595,
+                "layout_det_res": {
+                    "boxes": [
+                        {"label": "image", "coordinate": [20, 120, 420, 360], "score": 0.9},
+                    ]
+                },
+            },
+            "page_index": 1,
+        }
+    ]
+
+    filtered = _filter_regions_overlapping_images(regions, [], pp_results)
+
+    assert filtered == []
+    assert regions[0].evidence["filtered_image_source"] == "pp_structure"

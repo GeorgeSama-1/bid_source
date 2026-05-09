@@ -449,6 +449,7 @@ def pdf_toc_pipeline_command(
         write_json(parsed_dir / "pp_structure_results.json", [])
     layout_masks = build_layout_masks(pp_structure_results)
     write_json(parsed_dir / "page_layout_masks.json", layout_masks)
+    images = _load_images(parsed_dir / "images.json")
 
     if pp_structure_enabled:
         _pipeline_echo(3, total_steps, "Detecting table regions")
@@ -460,6 +461,7 @@ def pdf_toc_pipeline_command(
             table_regions = detect_candidate_table_regions(
                 pdf_path=pdf,
                 pdf_tables=source_tables,
+                images=images,
                 pp_structure_results=pp_structure_results,
                 out_dir=parsed_dir / "table_regions",
                 progress_callback=progress_callback,
@@ -475,6 +477,7 @@ def pdf_toc_pipeline_command(
             table_regions = detect_candidate_table_regions(
                 pdf_path=pdf,
                 pdf_tables=source_tables,
+                images=images,
                 pp_structure_results=[],
                 out_dir=parsed_dir / "table_regions",
                 progress_callback=progress_callback,
@@ -514,7 +517,6 @@ def pdf_toc_pipeline_command(
     write_json(candidates_dir / "toc_leaf_section_paths.json", planned_paths)
 
     _pipeline_echo(6 if vlm_table_enabled else 5, total_steps, "Building page material stream")
-    images = _load_images(parsed_dir / "images.json")
     page_material_stream = _build_page_material_stream_payload(
         blocks=blocks,
         tables=tables,
