@@ -411,6 +411,8 @@ def pdf_toc_pipeline_command(
     vlm_table_endpoint: Optional[str] = typer.Option(None, "--vlm-table-endpoint"),
     vlm_table_model: Optional[str] = typer.Option(None, "--vlm-table-model"),
     vlm_table_api_key: Optional[str] = typer.Option(None, "--vlm-table-api-key"),
+    vlm_table_timeout: int = typer.Option(180, "--vlm-table-timeout"),
+    vlm_table_max_tokens: int = typer.Option(4096, "--vlm-table-max-tokens"),
     progress: str = typer.Option("true", "--progress"),
 ) -> None:
     pp_structure_enabled = _parse_bool_flag(enable_pp_structure)
@@ -496,6 +498,8 @@ def pdf_toc_pipeline_command(
                 endpoint=vlm_table_endpoint,
                 model=vlm_table_model,
                 api_key=vlm_table_api_key,
+                request_timeout=vlm_table_timeout,
+                max_tokens=vlm_table_max_tokens,
                 progress_callback=progress_callback,
             )
         write_json(parsed_dir / "tables.json", tables)

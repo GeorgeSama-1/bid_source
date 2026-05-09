@@ -29,6 +29,35 @@ def test_parse_table_model_text_accepts_json_fences_and_table_model_wrapper() ->
     assert model["cells"][0]["text"] == "招标编号"
 
 
+def test_parse_table_model_text_accepts_qwen_list_rows_json() -> None:
+    text = """```json
+    [
+      ["本企业人员基本信息", "国家电网公司系统人员基本信息"],
+      ["人员姓名", "性别", "身份证号"],
+      ["无", "—", "—"]
+    ]
+    ```"""
+
+    model = _parse_table_model_text(text)
+
+    assert model["source"] == "vlm_rows_json"
+    assert model["row_count"] == 3
+    assert model["col_count"] == 3
+    assert model["rows"] == [
+        ["本企业人员基本信息", "国家电网公司系统人员基本信息", ""],
+        ["人员姓名", "性别", "身份证号"],
+        ["无", "—", "—"],
+    ]
+    assert model["cells"][0] == {
+        "row": 0,
+        "col": 0,
+        "text": "本企业人员基本信息",
+        "rowspan": 1,
+        "colspan": 1,
+        "bbox": None,
+    }
+
+
 def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
@@ -45,6 +74,7 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
         return image_path
 
     def fake_post(_endpoint, headers=None, json=None, timeout=None):
+        assert json["max_tokens"] == 4096
         return SimpleNamespace(
             raise_for_status=lambda: None,
             json=lambda: {
@@ -67,6 +97,7 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
         out_dir=tmp_path / "vlm_tables",
         endpoint="http://127.0.0.1:8118/v1/chat/completions",
         model="PaddleOCR-VL-1.5",
+        max_tokens=4096,
     )
 
     assert enhanced[0].table_model_source == "paddleocr_vl"

@@ -11,13 +11,18 @@ from bid_knowledge.schemas.models import ParsedTable
 from bid_knowledge.utils.io_utils import ensure_dir
 
 
-TABLE_TO_JSON_PROMPT = """请识别图片中的表格并输出严格 JSON，不要输出解释。
-JSON 必须包含：
-- row_count
-- col_count
-- cells: 每个单元格包含 row, col, text, rowspan, colspan，其中 row 和 col 从 0 开始
-- merged_cells: 合并单元格列表，可为空
-必须尽量保留原表格行列结构和合并单元格。"""
+TABLE_TO_JSON_PROMPT = """请识别图片中的表格并输出严格 JSON，不要输出解释、Markdown 或自然语言。
+第一个字符必须是 {，最后一个字符必须是 }。
+JSON schema:
+{
+  "row_count": 0,
+  "col_count": 0,
+  "cells": [
+    {"row": 0, "col": 0, "text": "", "rowspan": 1, "colspan": 1}
+  ],
+  "merged_cells": []
+}
+row 和 col 从 0 开始。必须尽量保留原表格行列结构和合并单元格。"""
 
 
 def _extract_response_text(payload: dict[str, Any]) -> str:
@@ -43,8 +48,42 @@ def _strip_json_fence(text: str) -> str:
     return stripped
 
 
+def _table_model_from_rows(rows: list[list[Any]], *, source: str) -> dict[str, Any]:
+    normalized_rows = [[str(cell or "").strip() for cell in row] for row in rows if isinstance(row, list)]
+    row_count = len(normalized_rows)
+    col_count = max((len(row) for row in normalized_rows), default=0)
+    padded_rows = [row + [""] * (col_count - len(row)) for row in normalized_rows]
+    cells: list[dict[str, Any]] = []
+    for row_index, row in enumerate(padded_rows):
+        for col_index, text in enumerate(row):
+            cells.append(
+                {
+                    "row": row_index,
+                    "col": col_index,
+                    "text": text,
+                    "rowspan": 1,
+                    "colspan": 1,
+                    "bbox": None,
+                }
+            )
+    return {
+        "schema_version": "table_model_v1",
+        "source": source,
+        "row_count": row_count,
+        "col_count": col_count,
+        "rows": padded_rows,
+        "cells": cells,
+        "merged_cells": [],
+        "bbox": None,
+        "raw_html": "",
+        "preserves_spans": False,
+    }
+
+
 def _parse_table_model_text(text: str) -> dict[str, Any]:
     payload = json.loads(_strip_json_fence(text))
+    if isinstance(payload, list):
+        return _table_model_from_rows(payload, source="vlm_rows_json")
     if isinstance(payload, dict) and isinstance(payload.get("table_model"), dict):
         payload = payload["table_model"]
     if not isinstance(payload, dict):
@@ -155,6 +194,7 @@ def _call_vlm_table_model(
     model: str,
     api_key: str | None = None,
     request_timeout: int = 180,
+    max_tokens: int = 4096,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import requests
 
@@ -171,6 +211,7 @@ def _call_vlm_table_model(
             },
         ],
         "temperature": 0,
+        "max_tokens": max_tokens,
     }
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -191,6 +232,7 @@ def enhance_tables_with_vlm(
     model: str | None = None,
     api_key: str | None = None,
     request_timeout: int = 180,
+    max_tokens: int = 4096,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[ParsedTable]:
     endpoint = endpoint or os.getenv("VLM_TABLE_ENDPOINT")
@@ -215,6 +257,7 @@ def enhance_tables_with_vlm(
                 model=model,
                 api_key=api_key,
                 request_timeout=request_timeout,
+                max_tokens=max_tokens,
             )
             data = table.model_dump()
             data.update(

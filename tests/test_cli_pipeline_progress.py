@@ -308,6 +308,8 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
     def fake_enhance_tables_with_vlm(**kwargs):
         captured["vlm_endpoint"] = kwargs["endpoint"]
         captured["vlm_model"] = kwargs["model"]
+        captured["vlm_timeout"] = kwargs["request_timeout"]
+        captured["vlm_max_tokens"] = kwargs["max_tokens"]
         return [enhanced_table]
 
     def fake_package_module_artifacts(**kwargs):
@@ -333,12 +335,18 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
             "http://172.20.0.160:8118/v1/chat/completions",
             "--vlm-table-model",
             "PaddleOCR-VL-1.5",
+            "--vlm-table-timeout",
+            "300",
+            "--vlm-table-max-tokens",
+            "4096",
         ],
     )
 
     assert result.exit_code == 0
     assert captured["vlm_endpoint"] == "http://172.20.0.160:8118/v1/chat/completions"
     assert captured["vlm_model"] == "PaddleOCR-VL-1.5"
+    assert captured["vlm_timeout"] == 300
+    assert captured["vlm_max_tokens"] == 4096
     assert captured["tables"] == [enhanced_table]
 
 
