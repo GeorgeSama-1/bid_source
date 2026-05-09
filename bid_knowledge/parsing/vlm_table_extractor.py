@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
+from threading import Lock
 from pathlib import Path
 from typing import Any, Callable
 
 from bid_knowledge.schemas.models import ParsedTable
-from bid_knowledge.utils.io_utils import ensure_dir
+from bid_knowledge.utils.io_utils import ensure_dir, write_json
 
 
 TABLE_TO_JSON_PROMPT = """请识别图片中的表格并输出严格 JSON，不要输出解释、Markdown 或自然语言。
@@ -233,6 +235,8 @@ def enhance_tables_with_vlm(
     api_key: str | None = None,
     request_timeout: int = 180,
     max_tokens: int = 4096,
+    incremental_out_path: str | Path | None = None,
+    workers: int = 1,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[ParsedTable]:
     endpoint = endpoint or os.getenv("VLM_TABLE_ENDPOINT")
@@ -242,9 +246,12 @@ def enhance_tables_with_vlm(
         return tables
 
     crop_dir = ensure_dir(Path(out_dir) / "table_crops")
-    enhanced: list[ParsedTable] = []
+    enhanced: list[ParsedTable] = list(tables)
     total = len(tables)
-    for index, table in enumerate(tables, start=1):
+    write_lock = Lock()
+
+    def process_one(index_and_table: tuple[int, ParsedTable]) -> tuple[int, ParsedTable]:
+        _index, table = index_and_table
         try:
             existing_image_path = getattr(table, "table_image_path", "")
             if existing_image_path and Path(existing_image_path).exists():
@@ -271,11 +278,35 @@ def enhance_tables_with_vlm(
                     "table_image_path": str(image_path),
                 }
             )
-            enhanced.append(ParsedTable(**data))
+            return _index, ParsedTable(**data)
         except Exception as exc:
             data = table.model_dump()
             data.update({"vlm_error": str(exc), "table_model_source": data.get("table_model_source") or data.get("source_type")})
-            enhanced.append(ParsedTable(**data))
-        if progress_callback:
-            progress_callback(index, total)
+            return _index, ParsedTable(**data)
+
+    completed = 0
+    max_workers = max(1, int(workers or 1))
+    if max_workers == 1:
+        for index, table in enumerate(tables):
+            result_index, result = process_one((index, table))
+            enhanced[result_index] = result
+            completed += 1
+            if incremental_out_path:
+                with write_lock:
+                    write_json(incremental_out_path, enhanced)
+            if progress_callback:
+                progress_callback(completed, total)
+        return enhanced
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_one, item) for item in enumerate(tables)]
+        for future in as_completed(futures):
+            result_index, result = future.result()
+            enhanced[result_index] = result
+            completed += 1
+            if incremental_out_path:
+                with write_lock:
+                    write_json(incremental_out_path, enhanced)
+            if progress_callback:
+                progress_callback(completed, total)
     return enhanced

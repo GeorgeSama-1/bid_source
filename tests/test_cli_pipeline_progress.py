@@ -310,6 +310,8 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
         captured["vlm_model"] = kwargs["model"]
         captured["vlm_timeout"] = kwargs["request_timeout"]
         captured["vlm_max_tokens"] = kwargs["max_tokens"]
+        captured["vlm_workers"] = kwargs["workers"]
+        captured["vlm_incremental_out_path"] = kwargs["incremental_out_path"]
         return [enhanced_table]
 
     def fake_package_module_artifacts(**kwargs):
@@ -339,6 +341,8 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
             "300",
             "--vlm-table-max-tokens",
             "4096",
+            "--vlm-table-workers",
+            "2",
         ],
     )
 
@@ -347,6 +351,8 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
     assert captured["vlm_model"] == "PaddleOCR-VL-1.5"
     assert captured["vlm_timeout"] == 300
     assert captured["vlm_max_tokens"] == 4096
+    assert captured["vlm_workers"] == 2
+    assert Path(captured["vlm_incremental_out_path"]).name == "tables.json"
     assert captured["tables"] == [enhanced_table]
 
 
