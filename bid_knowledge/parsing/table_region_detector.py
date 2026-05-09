@@ -563,15 +563,15 @@ def _regions_from_pymupdf_lines(pdf_path: str | Path) -> list[CandidateTableRegi
                 if rect is not None:
                     width = float(rect.x1 - rect.x0)
                     height = float(rect.y1 - rect.y0)
-                    if width >= 80 and height >= 16:
+                    if width >= 250 and height >= 80 and _rect_has_table_text_evidence(page, rect):
                         regions.append(
                             CandidateTableRegion(
                                 region_id=make_stable_id("table-region-rect", page_index, [rect.x0, rect.y0, rect.x1, rect.y1]),
                                 page_no=page_index,
                                 bbox=[float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)],
                                 detectors=["pymupdf_lines"],
-                                confidence=0.58,
-                                evidence={"source": "rect"},
+                                confidence=0.62,
+                                evidence={"source": "rect", "rect_text_verified": True},
                             )
                         )
                 for item in drawing.get("items") or []:
@@ -587,6 +587,27 @@ def _regions_from_pymupdf_lines(pdf_path: str | Path) -> list[CandidateTableRegi
     finally:
         doc.close()
     return regions
+
+
+def _rect_has_table_text_evidence(
+    page: Any,
+    rect: Any,
+    *,
+    min_blocks: int = 4,
+    min_text_chars: int = 20,
+) -> bool:
+    try:
+        blocks = page.get_text("blocks", clip=rect) or []
+    except Exception:
+        return False
+    texts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, list | tuple) or len(block) < 5:
+            continue
+        text = str(block[4] or "").strip()
+        if text:
+            texts.append(text)
+    return len(texts) >= min_blocks and sum(len(text) for text in texts) >= min_text_chars
 
 
 def _pdf_page_sizes(pdf_path: str | Path) -> dict[int, tuple[float, float]]:

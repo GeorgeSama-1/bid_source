@@ -7,6 +7,7 @@ from bid_knowledge.parsing.table_region_detector import (
     _line_regions_from_segments,
     _merge_candidate_regions,
     _normalize_regions_to_pdf_coords,
+    _rect_has_table_text_evidence,
     group_candidate_table_regions,
     groups_to_parsed_tables,
     regions_to_parsed_tables,
@@ -223,3 +224,25 @@ def test_filter_regions_overlapping_pp_structure_image_boxes() -> None:
 
     assert filtered == []
     assert regions[0].evidence["filtered_image_source"] == "pp_structure"
+
+
+def test_rect_has_table_text_evidence_requires_enough_text_blocks() -> None:
+    class FakePage:
+        def __init__(self, blocks):
+            self.blocks = blocks
+
+        def get_text(self, _kind, clip=None):
+            return self.blocks
+
+    valid_page = FakePage(
+        [
+            (10, 10, 50, 20, "招标编号", 0, 0),
+            (60, 10, 100, 20, "投标保证金金额", 0, 0),
+            (10, 30, 50, 40, "272608", 0, 0),
+            (60, 30, 100, 40, "测控及在线监测系统包05", 0, 0),
+        ]
+    )
+    weak_page = FakePage([(10, 10, 50, 20, "表头", 0, 0)])
+
+    assert _rect_has_table_text_evidence(valid_page, object()) is True
+    assert _rect_has_table_text_evidence(weak_page, object()) is False
