@@ -1,10 +1,13 @@
 from pathlib import Path
 
 from bid_knowledge.parsing.table_region_detector import (
+    CandidateTableGroup,
     CandidateTableRegion,
     _line_regions_from_segments,
     _merge_candidate_regions,
     _normalize_regions_to_pdf_coords,
+    group_candidate_table_regions,
+    groups_to_parsed_tables,
     regions_to_parsed_tables,
 )
 from bid_knowledge.schemas.models import ParsedTable
@@ -122,3 +125,59 @@ def test_normalize_regions_to_pdf_coords_converts_pp_pixel_bbox_before_merge() -
     assert normalized[0].page_width is None
     assert normalized[0].page_height is None
     assert normalized[0].evidence["source_page_width"] == 1684
+
+
+def test_group_candidate_table_regions_merges_adjacent_same_page_fragments() -> None:
+    regions = [
+        CandidateTableRegion(region_id="r1", page_no=1, bbox=[10, 100, 300, 180], detectors=["pymupdf_lines"], confidence=0.8),
+        CandidateTableRegion(region_id="r2", page_no=1, bbox=[12, 190, 302, 260], detectors=["pymupdf_lines"], confidence=0.75),
+        CandidateTableRegion(region_id="r3", page_no=1, bbox=[420, 100, 560, 180], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+
+    groups = group_candidate_table_regions(regions)
+
+    assert len(groups) == 2
+    assert groups[0].region_ids == ["r1", "r2"]
+    assert groups[0].bbox_by_page == {1: [10.0, 100.0, 302.0, 260.0]}
+    assert groups[0].is_cross_page is False
+    assert groups[1].region_ids == ["r3"]
+
+
+def test_group_candidate_table_regions_links_likely_cross_page_table() -> None:
+    regions = [
+        CandidateTableRegion(region_id="page1", page_no=1, bbox=[50, 500, 550, 790], detectors=["pymupdf_lines"], confidence=0.8),
+        CandidateTableRegion(region_id="page2", page_no=2, bbox=[52, 40, 548, 260], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+
+    groups = group_candidate_table_regions(regions)
+
+    assert len(groups) == 1
+    assert groups[0].region_ids == ["page1", "page2"]
+    assert groups[0].start_page == 1
+    assert groups[0].end_page == 2
+    assert groups[0].is_cross_page is True
+    assert groups[0].bbox_by_page[1] == [50.0, 500.0, 550.0, 790.0]
+    assert groups[0].bbox_by_page[2] == [52.0, 40.0, 548.0, 260.0]
+
+
+def test_groups_to_parsed_tables_keeps_cross_page_parts_under_one_group() -> None:
+    group = CandidateTableGroup(
+        group_id="group-1",
+        start_page=1,
+        end_page=2,
+        region_ids=["page1", "page2"],
+        bbox_by_page={1: [50, 500, 550, 790], 2: [52, 40, 548, 260]},
+        regions=[
+            CandidateTableRegion(region_id="page1", page_no=1, bbox=[50, 500, 550, 790], crop_image_path="page1.png"),
+            CandidateTableRegion(region_id="page2", page_no=2, bbox=[52, 40, 548, 260], crop_image_path="page2.png"),
+        ],
+        is_cross_page=True,
+    )
+
+    tables = groups_to_parsed_tables([group], [])
+
+    assert [table.table_id for table in tables] == ["group-1-p1", "group-1-p2"]
+    assert all(table.table_group_id == "group-1" for table in tables)
+    assert tables[0].table_group_part_index == 1
+    assert tables[1].table_group_part_index == 2
+    assert tables[0].table_image_path == "page1.png"

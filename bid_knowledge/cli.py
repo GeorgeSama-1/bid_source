@@ -24,7 +24,7 @@ from bid_knowledge.parsing.pp_structure import run_pp_structure
 from bid_knowledge.parsing.pp_table_extractor import extract_pp_structure_tables, merge_pp_and_pdf_tables
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
-from bid_knowledge.parsing.table_region_detector import detect_candidate_table_regions, regions_to_parsed_tables
+from bid_knowledge.parsing.table_region_detector import detect_candidate_table_regions, group_candidate_table_regions, groups_to_parsed_tables
 from bid_knowledge.parsing.toc_leaf_builder import (
     build_toc_leaf_candidates,
     toc_leaf_section_paths,
@@ -464,7 +464,8 @@ def pdf_toc_pipeline_command(
                 out_dir=parsed_dir / "table_regions",
                 progress_callback=progress_callback,
             )
-        tables = regions_to_parsed_tables(table_regions, source_tables)
+        table_groups = group_candidate_table_regions(table_regions, out_dir=parsed_dir / "table_regions")
+        tables = groups_to_parsed_tables(table_groups, source_tables)
         write_json(parsed_dir / "tables.json", tables)
     else:
         _pipeline_echo(3, total_steps, "Detecting PDF-native table regions")
@@ -478,7 +479,8 @@ def pdf_toc_pipeline_command(
                 out_dir=parsed_dir / "table_regions",
                 progress_callback=progress_callback,
             )
-        tables = regions_to_parsed_tables(table_regions, source_tables)
+        table_groups = group_candidate_table_regions(table_regions, out_dir=parsed_dir / "table_regions")
+        tables = groups_to_parsed_tables(table_groups, source_tables)
         write_json(parsed_dir / "tables.json", tables)
 
     if vlm_table_enabled:

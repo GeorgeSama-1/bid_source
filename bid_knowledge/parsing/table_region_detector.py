@@ -25,6 +25,22 @@ class CandidateTableRegion(ModelBase):
     page_height: float | None = None
 
 
+class CandidateTableGroup(ModelBase):
+    group_id: str
+    start_page: int
+    end_page: int
+    region_ids: list[str] = Field(default_factory=list)
+    bbox_by_page: dict[int, list[float]] = Field(default_factory=dict)
+    regions: list[CandidateTableRegion] = Field(default_factory=list)
+    is_cross_page: bool = False
+    confidence: float = 0.0
+    detectors: list[str] = Field(default_factory=list)
+    crop_image_paths: list[str] = Field(default_factory=list)
+    group_kind: str = "structured_table"
+    should_parse_table: bool = True
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
 def _float_bbox(value: Any) -> list[float] | None:
     if not isinstance(value, list | tuple) or len(value) < 4:
         return None
@@ -59,6 +75,18 @@ def _union_bbox(bbox: list[float], other: list[float]) -> list[float]:
         max(float(bbox[2]), float(other[2])),
         max(float(bbox[3]), float(other[3])),
     ]
+
+
+def _x_overlap_ratio(bbox: list[float], other: list[float]) -> float:
+    x0, _y0, x1, _y1 = bbox[:4]
+    ox0, _oy0, ox1, _oy1 = other[:4]
+    intersection = max(0.0, min(x1, ox1) - max(x0, ox0))
+    width = max(min(x1 - x0, ox1 - ox0), 1.0)
+    return intersection / width
+
+
+def _vertical_gap(previous: list[float], current: list[float]) -> float:
+    return float(current[1]) - float(previous[3])
 
 
 def _expand_bbox(
@@ -179,6 +207,97 @@ def _merge_candidate_regions(
             page_height=existing.page_height or region.page_height,
         )
     return sorted(merged, key=lambda item: (item.page_no, item.bbox[1], item.bbox[0]))
+
+
+def _detectors_for_regions(regions: list[CandidateTableRegion]) -> list[str]:
+    detector_order = {"pdfplumber": 0, "pymupdf_lines": 1, "pp_structure": 2}
+    return sorted(
+        dict.fromkeys(detector for region in regions for detector in region.detectors),
+        key=lambda value: detector_order.get(value, 99),
+    )
+
+
+def _group_from_regions(group_id: str, regions: list[CandidateTableRegion]) -> CandidateTableGroup:
+    sorted_regions = sorted(regions, key=lambda item: (item.page_no, item.bbox[1], item.bbox[0]))
+    bbox_by_page: dict[int, list[float]] = {}
+    for region in sorted_regions:
+        bbox = region.expanded_bbox or region.bbox
+        bbox_by_page[region.page_no] = _union_bbox(bbox_by_page[region.page_no], bbox) if region.page_no in bbox_by_page else bbox
+    confidence = max((region.confidence for region in sorted_regions), default=0.0)
+    evidence: dict[str, Any] = {
+        "region_count": len(sorted_regions),
+        "same_page_merged": len({region.page_no for region in sorted_regions}) == 1 and len(sorted_regions) > 1,
+    }
+    if len({region.page_no for region in sorted_regions}) > 1:
+        evidence["cross_page_linked"] = True
+    return CandidateTableGroup(
+        group_id=group_id,
+        start_page=min(region.page_no for region in sorted_regions),
+        end_page=max(region.page_no for region in sorted_regions),
+        region_ids=[region.region_id for region in sorted_regions],
+        bbox_by_page=bbox_by_page,
+        regions=sorted_regions,
+        is_cross_page=len({region.page_no for region in sorted_regions}) > 1,
+        confidence=confidence,
+        detectors=_detectors_for_regions(sorted_regions),
+        crop_image_paths=[region.crop_image_path for region in sorted_regions if region.crop_image_path],
+        evidence=evidence,
+    )
+
+
+def _should_merge_same_page(previous: CandidateTableRegion, current: CandidateTableRegion) -> bool:
+    if previous.page_no != current.page_no:
+        return False
+    gap = _vertical_gap(previous.expanded_bbox or previous.bbox, current.expanded_bbox or current.bbox)
+    return _x_overlap_ratio(previous.bbox, current.bbox) >= 0.72 and -8.0 <= gap <= 40.0
+
+
+def _should_link_cross_page(previous: CandidateTableGroup, current: CandidateTableGroup) -> bool:
+    if previous.end_page + 1 != current.start_page:
+        return False
+    previous_bbox = previous.bbox_by_page.get(previous.end_page)
+    current_bbox = current.bbox_by_page.get(current.start_page)
+    if not previous_bbox or not current_bbox:
+        return False
+    if _x_overlap_ratio(previous_bbox, current_bbox) < 0.72:
+        return False
+    previous_near_bottom = previous_bbox[3] >= 500.0
+    current_near_top = current_bbox[1] <= 180.0
+    return previous_near_bottom and current_near_top
+
+
+def group_candidate_table_regions(
+    regions: list[CandidateTableRegion],
+    *,
+    out_dir: str | Path | None = None,
+) -> list[CandidateTableGroup]:
+    buckets: list[list[CandidateTableRegion]] = []
+    for region in sorted(regions, key=lambda item: (item.page_no, item.bbox[1], item.bbox[0])):
+        match = next((bucket for bucket in buckets if _should_merge_same_page(bucket[-1], region)), None)
+        if match is None:
+            buckets.append([region])
+        else:
+            match.append(region)
+    same_page_groups = [
+        _group_from_regions(make_stable_id("table-group", index, bucket[0].page_no, bucket[0].bbox), bucket)
+        for index, bucket in enumerate(buckets, start=1)
+    ]
+    same_page_groups = sorted(same_page_groups, key=lambda item: (item.start_page, item.bbox_by_page[item.start_page][1], item.bbox_by_page[item.start_page][0]))
+
+    linked_groups: list[CandidateTableGroup] = []
+    for group in same_page_groups:
+        if linked_groups and _should_link_cross_page(linked_groups[-1], group):
+            combined_regions = [*linked_groups[-1].regions, *group.regions]
+            linked_groups[-1] = _group_from_regions(linked_groups[-1].group_id, combined_regions)
+        else:
+            linked_groups.append(group)
+    for index, group in enumerate(linked_groups, start=1):
+        group.group_id = make_stable_id("table-group", index, group.start_page, group.end_page, group.region_ids)
+    if out_dir:
+        output_dir = ensure_dir(out_dir)
+        write_json(output_dir / "table_groups.json", linked_groups)
+        write_jsonl(output_dir / "table_groups.jsonl", linked_groups)
+    return linked_groups
 
 
 def _regions_from_pdf_tables(tables: list[ParsedTable]) -> list[CandidateTableRegion]:
@@ -496,4 +615,46 @@ def regions_to_parsed_tables(
                 page_height=region.page_height,
             )
         )
+    return tables
+
+
+def groups_to_parsed_tables(
+    groups: list[CandidateTableGroup],
+    source_tables: list[ParsedTable] | None = None,
+) -> list[ParsedTable]:
+    source_by_id = {table.table_id: table for table in source_tables or []}
+    tables: list[ParsedTable] = []
+    for group in groups:
+        for part_index, region in enumerate(group.regions, start=1):
+            source = next((source_by_id[table_id] for table_id in region.source_table_ids if table_id in source_by_id), None)
+            rows = source.rows if source else []
+            table_model = getattr(source, "table_model", None) if source else None
+            if not table_model:
+                table_model = build_table_model_from_rows(rows, source="candidate_table_group", bbox=region.expanded_bbox or region.bbox)
+            source_type = "pp_structure_table" if "pp_structure" in region.detectors and not source else "pdf_table"
+            tables.append(
+                ParsedTable(
+                    table_id=f"{group.group_id}-p{part_index}" if len(group.regions) > 1 else group.group_id,
+                    page_no=region.page_no,
+                    rows=rows,
+                    bbox=region.expanded_bbox or region.bbox,
+                    source_type=source_type,
+                    table_model=table_model,
+                    table_group_id=group.group_id,
+                    table_group_start_page=group.start_page,
+                    table_group_end_page=group.end_page,
+                    table_group_part_index=part_index,
+                    table_group_part_count=len(group.regions),
+                    table_group_is_cross_page=group.is_cross_page,
+                    table_group_bbox_by_page=group.bbox_by_page,
+                    table_region_bbox=region.bbox,
+                    table_region_expanded_bbox=region.expanded_bbox,
+                    table_region_confidence=region.confidence,
+                    candidate_detectors=region.detectors,
+                    candidate_evidence=region.evidence,
+                    table_image_path=region.crop_image_path,
+                    should_parse_table=group.should_parse_table,
+                    table_group_kind=group.group_kind,
+                )
+            )
     return tables
