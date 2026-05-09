@@ -3,6 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from bid_knowledge import cli
+from bid_knowledge.parsing.table_region_detector import CandidateTableRegion
 from bid_knowledge.schemas.models import (
     ManualConfig,
     PageMaterialItem,
@@ -189,6 +190,28 @@ def test_pdf_toc_pipeline_merges_pdf_tables_when_pp_structure_misses_them(monkey
     monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: [pdf_table])
     monkeypatch.setattr(cli, "run_pp_structure", lambda *_, **__: [{"res": {"page_index": 0}, "page_index": 0}])
     monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [pp_table])
+    monkeypatch.setattr(
+        cli,
+        "detect_candidate_table_regions",
+        lambda **_: [
+            CandidateTableRegion(
+                region_id="region-pp",
+                page_no=1,
+                bbox=pp_table.bbox,
+                detectors=["pp_structure"],
+                confidence=0.7,
+            ),
+            CandidateTableRegion(
+                region_id="region-pdf",
+                page_no=1,
+                bbox=pdf_table.bbox,
+                detectors=["pdfplumber"],
+                confidence=0.7,
+                source_table_ids=[pdf_table.table_id],
+            ),
+        ],
+    )
+    monkeypatch.setattr(cli, "regions_to_parsed_tables", lambda _regions, _source_tables: [pp_table, pdf_table])
     monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
     monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
@@ -260,6 +283,21 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
     monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: [table])
     monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [])
     monkeypatch.setattr(cli, "merge_pp_and_pdf_tables", lambda _pp, pdf: pdf)
+    monkeypatch.setattr(
+        cli,
+        "detect_candidate_table_regions",
+        lambda **_: [
+            CandidateTableRegion(
+                region_id="region-table-1",
+                page_no=1,
+                bbox=table.bbox,
+                detectors=["pdfplumber"],
+                confidence=0.7,
+                source_table_ids=[table.table_id],
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "regions_to_parsed_tables", lambda _regions, _source_tables: [table])
     monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
     monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
@@ -300,3 +338,91 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
     assert captured["vlm_endpoint"] == "http://172.20.0.160:8118/v1/chat/completions"
     assert captured["vlm_model"] == "PaddleOCR-VL-1.5"
     assert captured["tables"] == [enhanced_table]
+
+
+def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypatch, tmp_path: Path) -> None:
+    runner = CliRunner()
+    block = PdfTextBlock(block_id="block-1", page_no=1, text="1、测试章节", bbox=[10, 20, 200, 40], block_no=1)
+    table = ParsedTable(table_id="pdf-table-1", page_no=1, rows=[["字段", "内容"]], bbox=[20, 80, 400, 200])
+    region = CandidateTableRegion(
+        region_id="region-1",
+        page_no=1,
+        bbox=[20, 80, 400, 200],
+        expanded_bbox=[10, 70, 410, 210],
+        detectors=["pdfplumber", "pymupdf_lines"],
+        confidence=0.85,
+        crop_image_path=str(tmp_path / "out" / "parsed" / "table_regions" / "debug_table_regions" / "region-1.png"),
+        source_table_ids=["pdf-table-1"],
+    )
+    region_table = ParsedTable(
+        table_id="region-1",
+        page_no=1,
+        rows=[["字段", "内容"]],
+        bbox=[10, 70, 410, 210],
+        table_image_path=region.crop_image_path,
+    )
+    candidate = cli.ReusableCandidate(
+        candidate_id="cand-1",
+        company_id="pdf",
+        document_id="demo",
+        rule_id="toc-1",
+        section_path="商务文件 / 1、测试章节",
+        title="1、测试章节",
+        content="",
+        candidate_type="attachment",
+        reuse_method="附件召回",
+        reuse_level="long_term",
+        enter_long_term_library=True,
+        source_file="demo.pdf",
+        source_page=1,
+        source_page_end=1,
+        source_container_title="1、测试章节",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_parse_pdf(*_, out_dir=None, **__):
+        out = Path(out_dir)
+        write_json(out / "text_blocks.json", [block])
+        write_json(out / "images.json", [])
+        return {"toc": [{"title": "1、测试章节", "page": 1, "level": 1}], "document_meta": {"page_count": 1}}
+
+    def fake_detect_candidate_table_regions(**kwargs):
+        captured["table_region_out_dir"] = kwargs["out_dir"]
+        captured["pdf_tables"] = kwargs["pdf_tables"]
+        return [region]
+
+    monkeypatch.setattr(cli, "parse_pdf", fake_parse_pdf)
+    monkeypatch.setattr(cli, "extract_tables", lambda *_, **__: [table])
+    monkeypatch.setattr(cli, "run_pp_structure", lambda *_, **__: [])
+    monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [])
+    monkeypatch.setattr(cli, "detect_candidate_table_regions", fake_detect_candidate_table_regions)
+    monkeypatch.setattr(cli, "regions_to_parsed_tables", lambda regions, source_tables: [region_table])
+    monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
+    monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
+    monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
+    monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
+    monkeypatch.setattr(cli, "build_combined_page_material_stream", lambda **_: [])
+
+    def fake_package_module_artifacts(**kwargs):
+        captured["tables"] = kwargs["tables"]
+        return {"sections": []}
+
+    monkeypatch.setattr(cli, "package_module_artifacts", fake_package_module_artifacts)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "pdf-toc-pipeline",
+            "--pdf",
+            "demo.pdf",
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--enable-pp-structure",
+            "true",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["pdf_tables"] == [table]
+    assert Path(captured["table_region_out_dir"]).name == "table_regions"
+    assert captured["tables"] == [region_table]

@@ -204,7 +204,11 @@ def enhance_tables_with_vlm(
     total = len(tables)
     for index, table in enumerate(tables, start=1):
         try:
-            image_path = _render_table_crop(pdf_path=pdf_path, table=table, out_dir=crop_dir, zoom=2.0)
+            existing_image_path = getattr(table, "table_image_path", "")
+            if existing_image_path and Path(existing_image_path).exists():
+                image_path = Path(existing_image_path)
+            else:
+                image_path = _render_table_crop(pdf_path=pdf_path, table=table, out_dir=crop_dir, zoom=2.0)
             table_model, raw_response = _call_vlm_table_model(
                 image_path=image_path,
                 endpoint=endpoint,

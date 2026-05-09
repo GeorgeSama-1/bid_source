@@ -74,3 +74,49 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
     assert enhanced[0].vlm_table_model["row_count"] == 1
     assert enhanced[0].vlm_raw_response["choices"][0]["message"]["content"]
     assert enhanced[0].table_image_path.endswith("table-1.png")
+
+
+def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    crop_path = tmp_path / "debug_table_regions" / "region-1.png"
+    crop_path.parent.mkdir()
+    crop_path.write_bytes(b"fake-png")
+    table = ParsedTable(
+        table_id="region-1",
+        page_no=1,
+        rows=[],
+        bbox=[10, 20, 110, 120],
+        table_image_path=str(crop_path),
+    )
+
+    def fail_render(*_, **__):
+        raise AssertionError("existing candidate crop should be reused")
+
+    def fake_post(_endpoint, headers=None, json=None, timeout=None):
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"row_count":1,"col_count":1,"cells":[{"row":0,"col":0,"text":"包05","rowspan":1,"colspan":1}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._render_table_crop", fail_render)
+    monkeypatch.setattr("requests.post", fake_post)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8118/v1/chat/completions",
+        model="PaddleOCR-VL-1.5",
+    )
+
+    assert enhanced[0].table_image_path == str(crop_path)
+    assert enhanced[0].table_model["cells"][0]["text"] == "包05"
