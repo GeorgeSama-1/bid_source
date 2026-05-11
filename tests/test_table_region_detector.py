@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+import types
 
 from bid_knowledge.parsing.table_region_detector import (
     CandidateTableGroup,
@@ -183,6 +185,82 @@ def test_groups_to_parsed_tables_keeps_cross_page_parts_under_one_group() -> Non
     assert tables[0].table_group_part_index == 1
     assert tables[1].table_group_part_index == 2
     assert tables[0].table_image_path == "page1.png"
+
+
+def test_groups_to_parsed_tables_uses_pdfplumber_crop_for_bbox_only_region(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    region = CandidateTableRegion(
+        region_id="pp-table",
+        page_no=1,
+        bbox=[10, 100, 140, 130],
+        expanded_bbox=[8, 98, 142, 132],
+        detectors=["pp_structure"],
+        confidence=0.72,
+    )
+    group = CandidateTableGroup(
+        group_id="table-group-1",
+        start_page=1,
+        end_page=1,
+        regions=[region],
+        detectors=["pp_structure"],
+    )
+
+    class FakeRow:
+        def __init__(self, cells):
+            self.cells = cells
+
+    class FakeFoundTable:
+        bbox = (10, 100, 140, 130)
+        rows = [
+            FakeRow([(10, 100, 70, 110), (70, 100, 140, 110)]),
+            FakeRow([(10, 110, 20, 120), (20, 110, 30, 120), (30, 110, 40, 120), (40, 110, 50, 120), (50, 110, 60, 120), (60, 110, 70, 120), (70, 110, 80, 120), (80, 110, 90, 120), (90, 110, 100, 120), (100, 110, 110, 120), (110, 110, 120, 120), (120, 110, 130, 120), (130, 110, 140, 120)]),
+            FakeRow([(10, 120, 20, 130), (20, 120, 30, 130), (30, 120, 40, 130), (40, 120, 50, 130), (50, 120, 60, 130), (60, 120, 70, 130), (70, 120, 80, 130), (80, 120, 90, 130), (90, 120, 100, 130), (100, 120, 110, 130), (110, 120, 120, 130), (120, 120, 130, 130), (130, 120, 140, 130)]),
+        ]
+
+        def extract(self):
+            return [
+                ["本企业人员基本信息", "国家电网公司系统人员基本信息"],
+                ["人员姓名", "性别", "身份证号", "职务", "任职时间", "与国网公司系统人员关系", "人员姓名", "性别", "身份证号", "（曾）任职单位名称", "职务", "任职状态（在职/非在职）", "离职/退休时间"],
+                ["无", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—"],
+            ]
+
+    class FakePage:
+        width = 595
+        height = 842
+
+        def __init__(self):
+            self.crop_bbox = None
+
+        def crop(self, bbox):
+            self.crop_bbox = bbox
+            return self
+
+        def find_tables(self):
+            return [FakeFoundTable()]
+
+    fake_page = FakePage()
+
+    class FakePdf:
+        pages = [fake_page]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda _path: FakePdf()))
+
+    tables = groups_to_parsed_tables([group], [], pdf_path=pdf_path)
+
+    assert fake_page.crop_bbox == (8.0, 98.0, 142.0, 132.0)
+    assert tables[0].rows[2][12] == "—"
+    assert tables[0].source_type == "pdf_table"
+    assert tables[0].candidate_detectors == ["pp_structure"]
+    assert tables[0].table_model["source"] == "pdfplumber_geometry"
+    assert tables[0].table_model["col_count"] == 13
+    assert tables[0].table_model["cells"][1]["colspan"] == 7
 
 
 def test_filter_regions_overlapping_images_drops_image_backed_tables() -> None:

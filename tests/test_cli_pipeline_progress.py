@@ -212,7 +212,7 @@ def test_pdf_toc_pipeline_merges_pdf_tables_when_pp_structure_misses_them(monkey
         ],
     )
     monkeypatch.setattr(cli, "group_candidate_table_regions", lambda regions, out_dir=None: [CandidateTableGroup(group_id="group-1", start_page=1, end_page=1, regions=regions)])
-    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda _groups, _source_tables: [pp_table, pdf_table])
+    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda _groups, _source_tables, **_: [pp_table, pdf_table])
     monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
     monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
@@ -299,7 +299,7 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
         ],
     )
     monkeypatch.setattr(cli, "group_candidate_table_regions", lambda regions, out_dir=None: [CandidateTableGroup(group_id="group-1", start_page=1, end_page=1, regions=regions)])
-    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda _groups, _source_tables: [table])
+    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda _groups, _source_tables, **_: [table])
     monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
     monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
@@ -420,7 +420,7 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
     monkeypatch.setattr(cli, "extract_pp_structure_tables", lambda *_, **__: [])
     monkeypatch.setattr(cli, "detect_candidate_table_regions", fake_detect_candidate_table_regions)
     monkeypatch.setattr(cli, "group_candidate_table_regions", lambda regions, out_dir=None: [CandidateTableGroup(group_id="group-1", start_page=1, end_page=1, regions=regions)])
-    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda groups, source_tables: [region_table])
+    monkeypatch.setattr(cli, "groups_to_parsed_tables", lambda groups, source_tables, **_: [region_table])
     monkeypatch.setattr(cli, "build_layout_masks", lambda *_: [])
     monkeypatch.setattr(cli, "build_toc_leaf_candidates", lambda **_: [candidate])
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])

@@ -471,7 +471,7 @@ def pdf_toc_pipeline_command(
                 progress_callback=progress_callback,
             )
         table_groups = group_candidate_table_regions(table_regions, out_dir=parsed_dir / "table_regions")
-        tables = groups_to_parsed_tables(table_groups, source_tables)
+        tables = groups_to_parsed_tables(table_groups, source_tables, pdf_path=pdf)
         write_json(parsed_dir / "tables.json", tables)
     else:
         _pipeline_echo(3, total_steps, "Detecting PDF-native table regions")
@@ -487,7 +487,7 @@ def pdf_toc_pipeline_command(
                 progress_callback=progress_callback,
             )
         table_groups = group_candidate_table_regions(table_regions, out_dir=parsed_dir / "table_regions")
-        tables = groups_to_parsed_tables(table_groups, source_tables)
+        tables = groups_to_parsed_tables(table_groups, source_tables, pdf_path=pdf)
         write_json(parsed_dir / "tables.json", tables)
 
     if vlm_table_enabled:

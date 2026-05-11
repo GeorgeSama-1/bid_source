@@ -5,10 +5,11 @@ from typing import Any, Callable
 
 from pydantic import Field
 
-from bid_knowledge.parsing.table_model import build_table_model_from_rows
+from bid_knowledge.parsing.table_model import build_table_model_from_pdfplumber_table, build_table_model_from_rows
 from bid_knowledge.schemas.models import ModelBase, ParsedTable
 from bid_knowledge.utils.id_utils import make_stable_id
 from bid_knowledge.utils.io_utils import ensure_dir, write_json, write_jsonl
+from bid_knowledge.utils.text_utils import clean_text
 
 
 class CandidateTableRegion(ModelBase):
@@ -711,9 +712,64 @@ def detect_candidate_table_regions(
     return regions
 
 
+def _is_pdfplumber_table_model(table_model: Any) -> bool:
+    return isinstance(table_model, dict) and str(table_model.get("source") or "").startswith("pdfplumber")
+
+
+def _clip_bbox_to_page(bbox: list[float], page: Any) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = [float(value) for value in bbox[:4]]
+    width = getattr(page, "width", None)
+    height = getattr(page, "height", None)
+    if width:
+        x0 = max(0.0, min(x0, float(width)))
+        x1 = max(0.0, min(x1, float(width)))
+    if height:
+        y0 = max(0.0, min(y0, float(height)))
+        y1 = max(0.0, min(y1, float(height)))
+    return (x0, y0, x1, y1)
+
+
+def _extract_pdfplumber_table_from_bbox(
+    *,
+    pdf_path: str | Path | None,
+    page_no: int,
+    bbox: list[float] | None,
+) -> tuple[list[list[str]], dict[str, Any]] | None:
+    if not pdf_path or not bbox or len(bbox) < 4 or page_no < 1:
+        return None
+    try:
+        import pdfplumber
+    except ImportError:
+        return None
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            if page_no > len(pdf.pages):
+                return None
+            page = pdf.pages[page_no - 1]
+            cropped = page.crop(_clip_bbox_to_page([float(value) for value in bbox[:4]], page))
+            found_tables = cropped.find_tables() or []
+            for found in found_tables:
+                raw_rows = found.extract() or []
+                rows = [
+                    [clean_text(cell) for cell in row]
+                    for row in raw_rows
+                    if isinstance(row, list) and any(clean_text(cell) for cell in row)
+                ]
+                if not rows:
+                    continue
+                found_bbox = list(found.bbox) if getattr(found, "bbox", None) else list(bbox[:4])
+                table_model = build_table_model_from_pdfplumber_table(found, rows, bbox=found_bbox)
+                if table_model.get("row_count") and table_model.get("col_count"):
+                    return table_model.get("rows") or rows, table_model
+    except Exception:
+        return None
+    return None
+
+
 def regions_to_parsed_tables(
     regions: list[CandidateTableRegion],
     source_tables: list[ParsedTable] | None = None,
+    pdf_path: str | Path | None = None,
 ) -> list[ParsedTable]:
     source_by_id = {table.table_id: table for table in source_tables or []}
     tables: list[ParsedTable] = []
@@ -721,9 +777,17 @@ def regions_to_parsed_tables(
         source = next((source_by_id[table_id] for table_id in region.source_table_ids if table_id in source_by_id), None)
         rows = source.rows if source else []
         table_model = getattr(source, "table_model", None) if source else None
+        if not source:
+            pdfplumber_result = _extract_pdfplumber_table_from_bbox(
+                pdf_path=pdf_path,
+                page_no=region.page_no,
+                bbox=region.expanded_bbox or region.bbox,
+            )
+            if pdfplumber_result:
+                rows, table_model = pdfplumber_result
         if not table_model:
             table_model = build_table_model_from_rows(rows, source="candidate_region", bbox=region.expanded_bbox or region.bbox)
-        source_type = "pp_structure_table" if "pp_structure" in region.detectors and not source else "pdf_table"
+        source_type = "pp_structure_table" if "pp_structure" in region.detectors and not source and not _is_pdfplumber_table_model(table_model) else "pdf_table"
         tables.append(
             ParsedTable(
                 table_id=region.region_id or make_stable_id("table-region", region.page_no, index, region.bbox),
@@ -748,6 +812,7 @@ def regions_to_parsed_tables(
 def groups_to_parsed_tables(
     groups: list[CandidateTableGroup],
     source_tables: list[ParsedTable] | None = None,
+    pdf_path: str | Path | None = None,
 ) -> list[ParsedTable]:
     source_by_id = {table.table_id: table for table in source_tables or []}
     tables: list[ParsedTable] = []
@@ -756,9 +821,17 @@ def groups_to_parsed_tables(
             source = next((source_by_id[table_id] for table_id in region.source_table_ids if table_id in source_by_id), None)
             rows = source.rows if source else []
             table_model = getattr(source, "table_model", None) if source else None
+            if not source:
+                pdfplumber_result = _extract_pdfplumber_table_from_bbox(
+                    pdf_path=pdf_path,
+                    page_no=region.page_no,
+                    bbox=region.expanded_bbox or region.bbox,
+                )
+                if pdfplumber_result:
+                    rows, table_model = pdfplumber_result
             if not table_model:
                 table_model = build_table_model_from_rows(rows, source="candidate_table_group", bbox=region.expanded_bbox or region.bbox)
-            source_type = "pp_structure_table" if "pp_structure" in region.detectors and not source else "pdf_table"
+            source_type = "pp_structure_table" if "pp_structure" in region.detectors and not source and not _is_pdfplumber_table_model(table_model) else "pdf_table"
             tables.append(
                 ParsedTable(
                     table_id=f"{group.group_id}-p{part_index}" if len(group.regions) > 1 else group.group_id,
