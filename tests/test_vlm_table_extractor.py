@@ -3,6 +3,7 @@ from threading import Lock
 from types import SimpleNamespace
 
 from bid_knowledge.parsing.vlm_table_extractor import (
+    _call_vlm_table_model,
     _parse_table_model_text,
     enhance_tables_with_vlm,
 )
@@ -107,6 +108,116 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
     assert enhanced[0].vlm_table_model["row_count"] == 1
     assert enhanced[0].vlm_raw_response["choices"][0]["message"]["content"]
     assert enhanced[0].table_image_path.endswith("table-1.png")
+
+
+def test_call_vlm_table_model_omits_authorization_when_api_key_is_missing(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "table.png"
+    image_path.write_bytes(b"fake-png")
+    captured_headers = {}
+
+    def fake_post(_endpoint, headers=None, json=None, timeout=None):
+        captured_headers.update(headers or {})
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"row_count":1,"col_count":1,"cells":[{"row":0,"col":0,"text":"无","rowspan":1,"colspan":1}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    table_model, _raw = _call_vlm_table_model(
+        image_path=image_path,
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert table_model["rows"] == [["无"]]
+    assert "Authorization" not in captured_headers
+
+
+def test_call_vlm_table_model_adds_bearer_authorization_when_api_key_is_present(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "table.png"
+    image_path.write_bytes(b"fake-png")
+    captured_headers = {}
+
+    def fake_post(_endpoint, headers=None, json=None, timeout=None):
+        captured_headers.update(headers or {})
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"row_count":1,"col_count":1,"cells":[{"row":0,"col":0,"text":"包05","rowspan":1,"colspan":1}]}'
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    table_model, _raw = _call_vlm_table_model(
+        image_path=image_path,
+        endpoint="https://api.example.com/v1/chat/completions",
+        model="external-vlm",
+        api_key="sk-test",
+    )
+
+    assert table_model["rows"] == [["包05"]]
+    assert captured_headers["Authorization"] == "Bearer sk-test"
+
+
+def test_enhance_tables_with_vlm_reads_api_key_from_custom_env_var(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    table = ParsedTable(
+        table_id="table-1",
+        page_no=1,
+        rows=[],
+        bbox=[10, 20, 110, 120],
+    )
+    seen_api_keys: list[str | None] = []
+
+    def fake_render(*, pdf_path, table, out_dir, zoom):
+        image_path = Path(out_dir) / "table-1.png"
+        image_path.write_bytes(b"fake-png")
+        return image_path
+
+    def fake_call(*, image_path, endpoint, model, api_key=None, request_timeout=180, max_tokens=4096):
+        seen_api_keys.append(api_key)
+        return (
+            {
+                "row_count": 1,
+                "col_count": 1,
+                "rows": [["ok"]],
+                "cells": [{"row": 0, "col": 0, "text": "ok", "rowspan": 1, "colspan": 1}],
+                "merged_cells": [],
+            },
+            {"id": "ok"},
+        )
+
+    monkeypatch.setenv("QWEN_VL_API_KEY", "custom-key")
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._render_table_crop", fake_render)
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", fake_call)
+
+    enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="https://api.example.com/v1/chat/completions",
+        model="external-vlm",
+        api_key_env="QWEN_VL_API_KEY",
+    )
+
+    assert seen_api_keys == ["custom-key"]
 
 
 def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, monkeypatch) -> None:

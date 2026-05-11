@@ -233,6 +233,7 @@ def enhance_tables_with_vlm(
     endpoint: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
+    api_key_env: str | None = None,
     request_timeout: int = 180,
     max_tokens: int = 4096,
     incremental_out_path: str | Path | None = None,
@@ -241,7 +242,7 @@ def enhance_tables_with_vlm(
 ) -> list[ParsedTable]:
     endpoint = endpoint or os.getenv("VLM_TABLE_ENDPOINT")
     model = model or os.getenv("VLM_TABLE_MODEL")
-    api_key = api_key or os.getenv("VLM_TABLE_API_KEY")
+    api_key = api_key or (os.getenv(api_key_env) if api_key_env else None) or os.getenv("VLM_TABLE_API_KEY")
     if not endpoint or not model:
         return tables
 

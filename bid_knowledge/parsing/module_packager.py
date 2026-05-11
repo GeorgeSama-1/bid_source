@@ -409,7 +409,9 @@ def _ordered_material_items(
         item_type = str(stream_item.get("item_type") or stream_item.get("type") or "")
         if item_type not in {"text", "table", "image"}:
             continue
-        if item_type == "table" and _page_material_table_duplicates_table_item(stream_item, table_items):
+        if item_type == "table":
+            continue
+        if item_type == "text" and _page_material_text_inside_any_table(stream_item, table_regions):
             continue
         if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
@@ -448,21 +450,12 @@ def _ordered_material_items(
     return sorted_items
 
 
-def _page_material_table_duplicates_table_item(stream_item: dict[str, Any], table_items: list[dict[str, Any]]) -> bool:
-    bbox = stream_item.get("bbox") or []
-    if not isinstance(bbox, list) or len(bbox) < 4:
+def _page_material_text_inside_any_table(stream_item: dict[str, Any], table_regions: dict[int, list[dict[str, Any]]]) -> bool:
+    if _looks_like_table_caption(str(stream_item.get("text") or "")):
         return False
+    bbox = stream_item.get("bbox") or []
     page_no = int(stream_item.get("page_no") or 0)
-    stream_bbox = [float(value) for value in bbox[:4]]
-    for table in table_items:
-        table_bbox = table.get("bbox")
-        if int(table.get("page_no") or 0) != page_no:
-            continue
-        if not isinstance(table_bbox, list) or len(table_bbox) < 4:
-            continue
-        if _bbox_overlap_ratio(stream_bbox, [float(value) for value in table_bbox[:4]]) >= 0.8:
-            return True
-    return False
+    return _bbox_inside_any_table_region(page_no, bbox, table_regions)
 
 
 def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -474,30 +467,10 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
             grouped[page_no].append(
                 {
                     "bbox": [float(value) for value in bbox[:4]],
-                    "cell_signatures": _table_cell_signatures(table.get("rows") or []),
                     "source_type": str(table.get("source_type") or ""),
                 }
             )
     return grouped
-
-
-def _table_cell_signatures(rows: list[list[Any]]) -> set[str]:
-    signatures: set[str] = set()
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        for cell in row:
-            signature = _text_signature(str(cell or ""))
-            if signature:
-                signatures.add(signature)
-    return signatures
-
-
-def _block_text_matches_table_cell(block_text: str, cell_signatures: set[str]) -> bool:
-    signature = _text_signature(block_text)
-    if not signature:
-        return False
-    return any(signature == cell or signature in cell or cell in signature for cell in cell_signatures)
 
 
 def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
@@ -505,17 +478,21 @@ def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[d
         return False
     if _looks_like_table_caption(block.text):
         return False
-    block_bbox = [float(value) for value in block.bbox[:4]]
+    return _bbox_inside_any_table_region(int(block.page_no), block.bbox, table_regions)
+
+
+def _bbox_inside_any_table_region(page_no: int, bbox: Any, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return False
+    block_bbox = [float(value) for value in bbox[:4]]
     x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
     center_y = (y0 + y1) / 2
-    for region in table_regions.get(int(block.page_no), []):
+    for region in table_regions.get(int(page_no), []):
         tx0, ty0, tx1, ty1 = region["bbox"]
         inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
         inside_by_overlap = _bbox_overlap_ratio(block_bbox, region["bbox"]) >= 0.15
-        if str(region.get("source_type") or "").startswith("pp_structure") and (inside_by_center or inside_by_overlap):
-            return True
-        if (inside_by_center or inside_by_overlap) and _block_text_matches_table_cell(block.text, region["cell_signatures"]):
+        if inside_by_center or inside_by_overlap:
             return True
     return False
 
@@ -573,7 +550,9 @@ def _merge_material_types(base_types: list[str], page_material_items: list[dict[
     kinds = list(base_types)
     for item in page_material_items or []:
         item_type = str(item.get("item_type") or "")
-        if item_type in {"text", "table", "image"} and item_type not in kinds:
+        if item_type == "table":
+            continue
+        if item_type in {"text", "image"} and item_type not in kinds:
             kinds.append(item_type)
     return kinds
 

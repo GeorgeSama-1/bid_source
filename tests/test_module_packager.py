@@ -1324,6 +1324,154 @@ def test_package_module_artifacts_omits_overlapping_table_text_even_when_center_
     assert material_md.count("金额") == 1
 
 
+def test_package_module_artifacts_omits_any_text_inside_table_bbox_even_without_cell_match(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 投标人与国家电网公司系统人员关系说明",
+            1,
+            1,
+            "投标人与国家电网公司系统人员关系说明",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="投标人与国家电网公司系统人员关系说明", bbox=[0, 80, 300, 100], block_no=1),
+        PdfTextBlock(block_id="intro", page_no=1, text="具体情况如下。", bbox=[0, 120, 300, 140], block_no=2),
+        PdfTextBlock(block_id="inside", page_no=1, text="国家电网公司系统人员基本信息", bbox=[40, 180, 260, 198], block_no=3),
+        PdfTextBlock(block_id="after", page_no=1, text="表格之后说明。", bbox=[0, 280, 300, 300], block_no=4),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="relation-table",
+            page_no=1,
+            rows=[["人员姓名", "性别"], ["无", "—"]],
+            bbox=[10, 160, 500, 250],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (
+        tmp_path
+        / "modules"
+        / "补充文件"
+        / "投标人与国家电网公司系统人员关系说明"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    assert "具体情况如下。" in material_md
+    assert "| 人员姓名 | 性别 |" in material_md
+    assert "国家电网公司系统人员基本信息" not in material_md
+    assert "表格之后说明。" in material_md
+
+
+def test_package_module_artifacts_ignores_page_stream_tables_without_table_items(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 投标保证金明细表",
+            1,
+            1,
+            "投标保证金明细表",
+        )
+    ]
+    page_material_items = [
+        {
+            "item_id": "stream-text",
+            "item_type": "text",
+            "source_type": "pdf_text",
+            "page_no": 1,
+            "top_y": 100,
+            "bbox": [0, 100, 300, 120],
+            "text": "表格前说明。",
+        },
+        {
+            "item_id": "stream-table",
+            "item_type": "table",
+            "source_type": "page_material_stream",
+            "page_no": 1,
+            "top_y": 130,
+            "bbox": [10, 130, 500, 260],
+            "payload": {"rows": [["汇款流水号", "包号"], ["218143314-024", "包05"]]},
+        },
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "补充文件" / "投标保证金明细表"
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    meta = json.loads((material_dir / "material_meta.json").read_text(encoding="utf-8"))
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    assert [item["item_type"] for item in ordered] == ["text"]
+    assert meta["material_types"] == ["text"]
+    assert "表格前说明。" in material_md
+    assert "汇款流水号" not in material_md
+
+
+def test_package_module_artifacts_omits_page_stream_text_inside_table_items(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 投标保证金明细表",
+            1,
+            1,
+            "投标保证金明细表",
+        )
+    ]
+    tables = [
+        ParsedTable(
+            table_id="deposit-table",
+            page_no=1,
+            rows=[["汇款流水号", "包号"], ["218143314-024", "包05"]],
+            bbox=[10, 130, 500, 260],
+        )
+    ]
+    page_material_items = [
+        {
+            "item_id": "stream-inside-text",
+            "item_type": "text",
+            "source_type": "pdf_text",
+            "page_no": 1,
+            "top_y": 160,
+            "bbox": [40, 160, 220, 180],
+            "text": "这是表格区域里的拆散文字",
+        },
+        {
+            "item_id": "stream-after-text",
+            "item_type": "text",
+            "source_type": "pdf_text",
+            "page_no": 1,
+            "top_y": 300,
+            "bbox": [0, 300, 300, 320],
+            "text": "表格之后说明。",
+        },
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "投标保证金明细表" / "material.md").read_text(encoding="utf-8")
+    assert "| 汇款流水号 | 包号 |" in material_md
+    assert "这是表格区域里的拆散文字" not in material_md
+    assert "表格之后说明。" in material_md
+
+
 def test_package_module_artifacts_links_fragmented_wide_table_instead_of_inline_markdown(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -2297,8 +2445,8 @@ def test_package_module_artifacts_preserves_cross_page_material_stream_order(tmp
     ordered = json.loads(ordered_path.read_text(encoding="utf-8"))
     stream_items = [item for item in ordered["items"] if str(item.get("source_type", "")).startswith("pp_structure")]
 
-    assert [item["item_id"] for item in stream_items] == ["pp-text-10", "pp-image-11", "pp-table-12"]
-    assert [item["item_type"] for item in stream_items] == ["text", "image", "table"]
+    assert [item["item_id"] for item in stream_items] == ["pp-text-10", "pp-image-11"]
+    assert [item["item_type"] for item in stream_items] == ["text", "image"]
     assert stream_items[0]["text"] == "第一页授权正文"
     assert stream_items[0]["payload"]["ocr_texts"] == ["第一页授权正文"]
 
