@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from types import SimpleNamespace
 from pathlib import Path
@@ -1810,6 +1811,80 @@ def test_package_module_artifacts_scopes_toc_leaf_sections_by_same_page_y_bounds
     assert "3.1.1、汇款凭证" not in guarantee_md
     assert "3.1.3、银行基本账户证明扫描件" not in guarantee_md
     assert "![汇款凭证_图1](image_items/汇款凭证_图1.jpeg)" in transfer_md
+
+
+def test_package_module_artifacts_scopes_tables_by_detected_region_not_expanded_crop(tmp_path: Path) -> None:
+    candidate = _candidate(
+        "PDF / 3、 补充文件 / 3.8、 商务评分标准涉及的支撑材料 / （2）、 部分业主出具的履约优秀证明8份",
+        579,
+        579,
+        "（2）、 部分业主出具的履约优秀证明8份",
+    )
+    candidate.material_evidence = {"start_y": 80.0, "end_y": None, "start_block_id": "h2", "end_block_id": None}
+    blocks = [
+        PdfTextBlock(block_id="h2", page_no=579, text="（2）、部分业主出具的履约优秀证明8份", bbox=[0, 80, 300, 100], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="expanded-before-title",
+            page_no=579,
+            rows=[["序号", "证明"], ["1", "优秀证明"]],
+            bbox=[20, 40, 500, 260],
+            table_region_bbox=[20, 120, 500, 260],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=[candidate],
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path],
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.8、 商务评分标准涉及的支撑材料"
+        / "（2）、 部分业主出具的履约优秀证明8份"
+    )
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    table_json = material_dir / "table_items" / "部分业主出具的履约优秀证明8份_表1.json"
+
+    assert table_json.exists()
+    assert "| 序号 | 证明 |" in material_md
+    assert "优秀证明" in material_md
+
+
+def test_package_module_artifacts_keeps_long_folder_titles_readable_without_hash_suffix(tmp_path: Path) -> None:
+    long_title = "（1.1）、 01-2025年35kV及以上输变电一次设备和装置材料供应业绩证明文件及运行维护服务评价材料补充说明附件资料"
+    candidate = _candidate(
+        f"PDF / 3、 补充文件 / {long_title}",
+        1,
+        1,
+        long_title,
+    )
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text=long_title, bbox=[0, 80, 500, 100], block_no=1),
+    ]
+
+    package_module_artifacts(
+        candidates=[candidate],
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path],
+    )
+
+    child_dirs = [path.name for path in (tmp_path / "modules" / "3、 补充文件").iterdir() if path.is_dir()]
+    assert child_dirs
+    assert not re.search(r"_[0-9a-f]{8}$", child_dirs[0])
+    assert child_dirs[0].startswith("（1.1）、 01-2025年35kV及以上输变电一次设备和装置材料供应")
 
 
 def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_markdown(tmp_path: Path) -> None:

@@ -90,6 +90,30 @@ def _block_bottom_y(block: PdfTextBlock) -> float | None:
     return float(block.bbox[3]) if block.bbox and len(block.bbox) >= 4 else None
 
 
+def _bbox_top_y(bbox: list[Any] | None) -> float | None:
+    if not bbox or len(bbox) < 2:
+        return None
+    try:
+        return float(bbox[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _table_assignment_bbox(table: ParsedTable | dict[str, Any]) -> list[Any] | None:
+    data = table.model_dump() if isinstance(table, ParsedTable) else table
+    region_bbox = data.get("table_region_bbox")
+    if isinstance(region_bbox, list) and len(region_bbox) >= 4:
+        return region_bbox
+    bbox = data.get("bbox")
+    if isinstance(bbox, list) and len(bbox) >= 4:
+        return bbox
+    return None
+
+
+def _table_assignment_top_y(table: ParsedTable | dict[str, Any]) -> float | None:
+    return _bbox_top_y(_table_assignment_bbox(table))
+
+
 def _text_signature(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
@@ -1180,7 +1204,7 @@ def _safe_dirname(raw: str) -> str:
     base = re.sub(r"\s+", " ", base).strip()
     if len(base) <= 60:
         return base
-    return f"{base[:36].rstrip(' _')}_{make_stable_id('dir', raw)[-8:]}"
+    return base[:60].rstrip(" _") or "未命名层级"
 
 
 def _is_under_section_path(section_path: str, anchor_path: str) -> bool:
@@ -1424,8 +1448,8 @@ def _package_compound_materials(
                     )
 
                     table_items: list[dict[str, Any]] = []
-                    for table_index, table in enumerate(sorted(child_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])), start=1):
-                        top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0
+                    for table_index, table in enumerate(sorted(child_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)), start=1):
+                        top_y = _table_assignment_top_y(table) or 0.0
                         table_title = _sanitize_item_title(child_title, f"表{table_index}")
                         item_dir = ensure_dir(child_dir / "table_items")
                         json_path = item_dir / _item_filename(table_title, "json")
@@ -1581,7 +1605,7 @@ def _package_compound_materials(
                     for table in scoped_tables
                     if _item_in_range(
                         table.page_no,
-                        float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else None,
+                        _table_assignment_top_y(table),
                         child_start_page,
                         child_start_y,
                         child_end_page,
@@ -1614,8 +1638,8 @@ def _package_compound_materials(
                 )
 
                 table_items: list[dict[str, Any]] = []
-                for table_index, table in enumerate(sorted(child_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])), start=1):
-                    top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0
+                for table_index, table in enumerate(sorted(child_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)), start=1):
+                    top_y = _table_assignment_top_y(table) or 0.0
                     table_title = _sanitize_item_title(child_title, f"表{table_index}")
                     item_dir = ensure_dir(child_dir / "table_items")
                     json_path = item_dir / _item_filename(table_title, "json")
@@ -2190,7 +2214,7 @@ def _write_parent_preface_packages(
             for table in tables
             if _item_in_range(
                 table.page_no,
-                float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                _table_assignment_top_y(table),
                 int(scope["start_page"]),
                 scope.get("start_y"),
                 int(scope["end_page"]),
@@ -2234,8 +2258,8 @@ def _write_parent_preface_packages(
             pdf_path=pdf_path,
         )
         table_items: list[dict[str, Any]] = []
-        for table_index, table in enumerate(sorted(scoped_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])), start=1):
-            top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0
+        for table_index, table in enumerate(sorted(scoped_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)), start=1):
+            top_y = _table_assignment_top_y(table) or 0.0
             table_title = _sanitize_item_title(parent_title, f"表{table_index}")
             json_path = ensure_dir(parent_dir / "table_items") / _item_filename(table_title, "json")
             item = {
@@ -2342,13 +2366,12 @@ def _ordered_capture(
             }
         )
     for table in tables:
-        bbox = table.bbox or [0, 0, 0, 0]
-        y = float(bbox[1]) if len(bbox) >= 2 else 0.0
+        y = _table_assignment_top_y(table)
         items.append(
             {
                 "type": "table",
                 "page_no": table.page_no,
-                "top_y": y,
+                "top_y": y if y is not None else 0.0,
                 "table_id": table.table_id,
                 "rows": table.rows,
                 "bbox": table.bbox,
@@ -2538,7 +2561,7 @@ def package_module_artifacts(
                     for table in module_tables
                     if _item_in_range(
                         table.page_no,
-                        float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                        _table_assignment_top_y(table),
                         int(candidate_scope["start_page"]),
                         candidate_scope.get("start_y"),
                         int(candidate_scope["end_page"]),
@@ -2551,7 +2574,7 @@ def package_module_artifacts(
                     for table in module_tables
                     if _item_in_range(
                         table.page_no,
-                        float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else 0.0,
+                        _table_assignment_top_y(table),
                         int(attachment_scope["start_page"]),
                         attachment_scope.get("start_y"),
                         int(attachment_scope["end_page"]),
@@ -2678,8 +2701,8 @@ def package_module_artifacts(
 
             table_items_by_folder: dict[str, list[dict[str, Any]]] = defaultdict(list)
             table_counts: dict[str, int] = {}
-            for table in sorted(module_tables, key=lambda item: (item.page_no, (item.bbox or [0, 0, 0, 0])[1])):
-                top_y = float((table.bbox or [0, 0, 0, 0])[1]) if table.bbox else None
+            for table in sorted(module_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)):
+                top_y = _table_assignment_top_y(table)
                 nearest = find_nearest_heading(heading_candidates, table.page_no, top_y)
                 context_title = _fallback_context_title(
                     nearest=nearest,
