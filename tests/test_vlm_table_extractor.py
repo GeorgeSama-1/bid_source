@@ -61,6 +61,28 @@ def test_parse_table_model_text_accepts_qwen_list_rows_json() -> None:
     }
 
 
+def test_parse_table_model_text_expands_wrong_row_and_col_counts_from_cells() -> None:
+    text = """{
+      "row_count": 4,
+      "col_count": 12,
+      "cells": [
+        {"row": 0, "col": 0, "text": "本企业人员基本信息", "rowspan": 1, "colspan": 6},
+        {"row": 0, "col": 6, "text": "国家电网公司系统人员基本信息", "rowspan": 1, "colspan": 7},
+        {"row": 1, "col": 12, "text": "离职/退休时间", "rowspan": 1, "colspan": 1},
+        {"row": 2, "col": 12, "text": "—", "rowspan": 1, "colspan": 1}
+      ],
+      "merged_cells": []
+    }"""
+
+    model = _parse_table_model_text(text)
+
+    assert model["row_count"] == 3
+    assert model["col_count"] == 13
+    assert len(model["rows"]) == 3
+    assert all(len(row) == 13 for row in model["rows"])
+    assert model["rows"][2][12] == "—"
+
+
 def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")

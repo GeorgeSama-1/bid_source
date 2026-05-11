@@ -109,6 +109,15 @@ def _parse_table_model_text(text: str) -> dict[str, Any]:
                 "bbox": cell.get("bbox"),
             }
         )
+    if normalized_cells:
+        row_count = max(
+            0,
+            max(int(cell["row"]) + int(cell["rowspan"]) for cell in normalized_cells),
+        )
+        col_count = max(
+            0,
+            max(int(cell["col"]) + int(cell["colspan"]) for cell in normalized_cells),
+        )
     rows = [["" for _ in range(col_count)] for _ in range(row_count)]
     for cell in normalized_cells:
         row = int(cell["row"])
