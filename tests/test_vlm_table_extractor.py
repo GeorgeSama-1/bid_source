@@ -288,6 +288,63 @@ def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, 
     assert enhanced[0].table_model["cells"][0]["text"] == "包05"
 
 
+def test_enhance_tables_with_vlm_skips_reliable_pdfplumber_geometry_table(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    table_model = {
+        "schema_version": "table_model_v1",
+        "source": "pdfplumber_geometry",
+        "row_count": 3,
+        "col_count": 13,
+        "rows": [["本企业人员基本信息", "", "", "", "", "", "国家电网公司系统人员基本信息"], ["人员姓名"], ["无"]],
+        "cells": [
+            {"row": 0, "col": 0, "text": "本企业人员基本信息", "rowspan": 1, "colspan": 6},
+            {"row": 0, "col": 6, "text": "国家电网公司系统人员基本信息", "rowspan": 1, "colspan": 7},
+            {"row": 1, "col": 0, "text": "人员姓名", "rowspan": 1, "colspan": 1},
+            {"row": 2, "col": 0, "text": "无", "rowspan": 1, "colspan": 1},
+        ],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 6},
+            {"row": 0, "col": 6, "rowspan": 1, "colspan": 7},
+        ],
+        "preserves_spans": True,
+    }
+    table = ParsedTable(
+        table_id="pdfplumber-table",
+        page_no=1,
+        rows=table_model["rows"],
+        bbox=[10, 20, 110, 120],
+        table_model=table_model,
+    )
+
+    calls: list[str] = []
+
+    def record_render(*_, **__):
+        calls.append("render")
+        return tmp_path / "should-not-exist.png"
+
+    def record_call(*_, **__):
+        calls.append("call")
+        return ({}, {})
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._render_table_crop", record_render)
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", record_call)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert enhanced[0].table_id == "pdfplumber-table"
+    assert enhanced[0].table_model == table_model
+    assert calls == []
+    assert not getattr(enhanced[0], "vlm_error", None)
+    assert not getattr(enhanced[0], "vlm_raw_response", None)
+
+
 def test_enhance_tables_with_vlm_writes_incremental_results_as_each_table_finishes(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")

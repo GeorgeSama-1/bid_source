@@ -111,6 +111,102 @@ def build_table_model_from_rows(
     }
 
 
+def _cell_bbox(cell: Any) -> list[float] | None:
+    bbox = getattr(cell, "bbox", cell)
+    if bbox is None or not isinstance(bbox, list | tuple) or len(bbox) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(value) for value in bbox[:4]]
+    except (TypeError, ValueError):
+        return None
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [x0, y0, x1, y1]
+
+
+def _coord_index(coords: list[float], value: float, *, tolerance: float = 1.0) -> int:
+    for index, coord in enumerate(coords):
+        if abs(coord - value) <= tolerance:
+            return index
+    return min(range(len(coords)), key=lambda index: abs(coords[index] - value))
+
+
+def build_table_model_from_pdfplumber_table(
+    table: Any,
+    rows: list[list[Any]],
+    *,
+    bbox: list[float] | None = None,
+) -> dict[str, Any]:
+    row_groups = list(getattr(table, "rows", []) or [])
+    geometry_rows: list[list[list[float]]] = []
+    for row_group in row_groups:
+        bboxes = [_cell_bbox(cell) for cell in (getattr(row_group, "cells", []) or [])]
+        bboxes = [cell_bbox for cell_bbox in bboxes if cell_bbox]
+        if bboxes:
+            geometry_rows.append(bboxes)
+    if not geometry_rows:
+        return build_table_model_from_rows(rows, source="pdfplumber", bbox=bbox)
+
+    x_edges = sorted({coord for row in geometry_rows for cell in row for coord in (cell[0], cell[2])})
+    y_edges = sorted({coord for row in geometry_rows for cell in row for coord in (cell[1], cell[3])})
+    if len(x_edges) < 2 or len(y_edges) < 2:
+        return build_table_model_from_rows(rows, source="pdfplumber", bbox=bbox)
+
+    normalized_rows = [[clean_text(cell) for cell in row] for row in rows if isinstance(row, list)]
+    cells: list[dict[str, Any]] = []
+    for visual_row_index, geometry_row in enumerate(geometry_rows):
+        row_texts = normalized_rows[visual_row_index] if visual_row_index < len(normalized_rows) else []
+        for visual_col_index, cell_bbox in enumerate(geometry_row):
+            row_index = _coord_index(y_edges, cell_bbox[1])
+            row_end_index = _coord_index(y_edges, cell_bbox[3])
+            col_index = _coord_index(x_edges, cell_bbox[0])
+            col_end_index = _coord_index(x_edges, cell_bbox[2])
+            text = row_texts[visual_col_index] if visual_col_index < len(row_texts) else ""
+            cells.append(
+                {
+                    "row": row_index,
+                    "col": col_index,
+                    "rowspan": max(1, row_end_index - row_index),
+                    "colspan": max(1, col_end_index - col_index),
+                    "text": text,
+                    "is_header": row_index == 0,
+                    "bbox": cell_bbox,
+                }
+            )
+
+    row_count = len(y_edges) - 1
+    col_count = len(x_edges) - 1
+    grid = [["" for _ in range(col_count)] for _ in range(row_count)]
+    for cell in cells:
+        row_index = int(cell["row"])
+        col_index = int(cell["col"])
+        if 0 <= row_index < row_count and 0 <= col_index < col_count:
+            grid[row_index][col_index] = str(cell.get("text") or "")
+
+    merged_cells = [
+        {
+            "row": cell["row"],
+            "col": cell["col"],
+            "rowspan": cell["rowspan"],
+            "colspan": cell["colspan"],
+        }
+        for cell in cells
+        if int(cell.get("rowspan") or 1) > 1 or int(cell.get("colspan") or 1) > 1
+    ]
+    return {
+        "schema_version": "table_model_v1",
+        "source": "pdfplumber_geometry",
+        "row_count": row_count,
+        "col_count": col_count,
+        "rows": grid,
+        "cells": cells,
+        "merged_cells": merged_cells,
+        "bbox": _normalize_bbox(bbox),
+        "raw_html": "",
+        "preserves_spans": bool(merged_cells),
+    }
+
+
 def build_table_model_from_html(
     html: str,
     *,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from bid_knowledge.parsing.table_model import build_table_model_from_rows
+from bid_knowledge.parsing.table_model import build_table_model_from_pdfplumber_table
 from bid_knowledge.schemas.models import ParsedTable, ProcessingPlan
 from bid_knowledge.utils.id_utils import make_stable_id
 from bid_knowledge.utils.io_utils import write_json
@@ -58,13 +58,14 @@ def extract_tables(
                 if not normalized_rows:
                     continue
                 bbox = list(found.bbox) if getattr(found, "bbox", None) else None
+                table_model = build_table_model_from_pdfplumber_table(found, normalized_rows, bbox=bbox)
                 tables.append(
                     ParsedTable(
                         table_id=make_stable_id("table", page_no, table_index),
                         page_no=page_no,
-                        rows=normalized_rows,
+                        rows=table_model.get("rows") or normalized_rows,
                         bbox=bbox,
-                        table_model=build_table_model_from_rows(normalized_rows, source="pdfplumber", bbox=bbox),
+                        table_model=table_model,
                     )
                 )
             if progress_callback:
