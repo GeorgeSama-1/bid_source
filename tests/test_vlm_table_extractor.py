@@ -345,6 +345,66 @@ def test_enhance_tables_with_vlm_skips_reliable_pdfplumber_geometry_table(tmp_pa
     assert not getattr(enhanced[0], "vlm_raw_response", None)
 
 
+def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    crop_path = tmp_path / "debug_table_regions" / "page574.png"
+    crop_path.parent.mkdir()
+    crop_path.write_bytes(b"fake-png")
+    table_model = {
+        "schema_version": "table_model_v1",
+        "source": "pdfplumber_geometry",
+        "row_count": 2,
+        "col_count": 1,
+        "rows": [["绩效评价结果查询"], ["内容"]],
+        "cells": [
+            {"row": 0, "col": 0, "text": "绩效评价结果查询", "rowspan": 1, "colspan": 1},
+            {"row": 1, "col": 0, "text": "内容", "rowspan": 1, "colspan": 1},
+        ],
+        "merged_cells": [],
+        "preserves_spans": False,
+    }
+    table = ParsedTable(
+        table_id="table-group_afaf31f7e922",
+        page_no=574,
+        rows=table_model["rows"],
+        bbox=[5.6, 167.6, 835.8, 438.2],
+        table_model=table_model,
+        table_image_path=str(crop_path),
+        candidate_detectors=["pdfplumber", "pp_structure"],
+    )
+    calls: list[str] = []
+
+    def fake_call(*, image_path, endpoint, model, api_key=None, request_timeout=180, max_tokens=4096):
+        calls.append(str(image_path))
+        return (
+            {
+                "source": "paddleocr_vl",
+                "row_count": 3,
+                "col_count": 4,
+                "rows": [["项目", "结果", "等级", "时间"], ["绩效", "优秀", "A", "2024"], ["备注", "", "", ""]],
+                "cells": [{"row": 0, "col": 0, "text": "项目", "rowspan": 1, "colspan": 1}],
+                "merged_cells": [],
+            },
+            {"id": "vlm-ok"},
+        )
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", fake_call)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert calls == [str(crop_path)]
+    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["row_count"] == 3
+    assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
+
+
 def test_enhance_tables_with_vlm_writes_incremental_results_as_each_table_finishes(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")

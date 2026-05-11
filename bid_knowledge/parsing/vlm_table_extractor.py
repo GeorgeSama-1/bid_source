@@ -245,7 +245,14 @@ def _has_reliable_pdfplumber_geometry(table: ParsedTable) -> bool:
         col_count = int(table_model.get("col_count") or 0)
     except (TypeError, ValueError):
         return False
-    return row_count > 0 and col_count > 0 and isinstance(rows, list) and bool(rows) and isinstance(cells, list) and bool(cells)
+    if not isinstance(rows, list) or not rows or not isinstance(cells, list) or not cells:
+        return False
+    if row_count < 2 or col_count < 2 or len(cells) < 4:
+        return False
+    detectors = getattr(table, "candidate_detectors", None) or []
+    if "pp_structure" in detectors and (row_count <= 2 or col_count <= 2 or len(cells) <= 4):
+        return False
+    return True
 
 
 def enhance_tables_with_vlm(
