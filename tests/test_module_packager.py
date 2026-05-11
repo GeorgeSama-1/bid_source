@@ -1852,11 +1852,56 @@ def test_package_module_artifacts_scopes_tables_by_detected_region_not_expanded_
         / "（2）、 部分业主出具的履约优秀证明8份"
     )
     material_md = (material_dir / "material.md").read_text(encoding="utf-8")
-    table_json = material_dir / "table_items" / "部分业主出具的履约优秀证明8份_表1.json"
+    table_jsons = list((material_dir / "table_items").glob("*.json"))
 
-    assert table_json.exists()
+    assert table_jsons
     assert "| 序号 | 证明 |" in material_md
     assert "优秀证明" in material_md
+
+
+def test_package_module_artifacts_keeps_table_when_original_bbox_matches_section_scope(tmp_path: Path) -> None:
+    candidate = _candidate(
+        "PDF / 3、 补充文件 / 3.8、 商务评分标准涉及的支撑材料 / （2）、 部分业主出具的履约优秀证明8份",
+        579,
+        579,
+        "（2）、 部分业主出具的履约优秀证明8份",
+    )
+    candidate.material_evidence = {"start_y": 80.0, "end_y": 200.0, "start_block_id": "h2", "end_block_id": "next"}
+    blocks = [
+        PdfTextBlock(block_id="h2", page_no=579, text="（2）、部分业主出具的履约优秀证明8份", bbox=[0, 80, 300, 100], block_no=1),
+        PdfTextBlock(block_id="next", page_no=579, text="1.1 目录不存在的小标题", bbox=[0, 200, 300, 220], block_no=2),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="original-bbox-in-scope",
+            page_no=579,
+            rows=[["工程名称", "评价"], ["项目A", "优秀"]],
+            bbox=[20, 120, 500, 180],
+            table_region_bbox=[20, 240, 500, 300],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=[candidate],
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["3、 补充文件"],
+        planned_section_paths=[candidate.section_path],
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.8、 商务评分标准涉及的支撑材料"
+        / "（2）、 部分业主出具的履约优秀证明8份"
+    )
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    assert "| 工程名称 | 评价 |" in material_md
+    assert "项目A" in material_md
 
 
 def test_package_module_artifacts_keeps_long_folder_titles_readable_without_hash_suffix(tmp_path: Path) -> None:

@@ -99,19 +99,40 @@ def _bbox_top_y(bbox: list[Any] | None) -> float | None:
         return None
 
 
-def _table_assignment_bbox(table: ParsedTable | dict[str, Any]) -> list[Any] | None:
+def _table_position_bboxes(table: ParsedTable | dict[str, Any]) -> list[list[Any]]:
     data = table.model_dump() if isinstance(table, ParsedTable) else table
-    region_bbox = data.get("table_region_bbox")
-    if isinstance(region_bbox, list) and len(region_bbox) >= 4:
-        return region_bbox
+    bboxes: list[list[Any]] = []
     bbox = data.get("bbox")
     if isinstance(bbox, list) and len(bbox) >= 4:
-        return bbox
+        bboxes.append(bbox)
+    region_bbox = data.get("table_region_bbox")
+    if isinstance(region_bbox, list) and len(region_bbox) >= 4:
+        bboxes.append(region_bbox)
+    return bboxes
+
+
+def _table_assignment_bbox(table: ParsedTable | dict[str, Any]) -> list[Any] | None:
+    bboxes = _table_position_bboxes(table)
+    if bboxes:
+        return bboxes[0]
     return None
 
 
 def _table_assignment_top_y(table: ParsedTable | dict[str, Any]) -> float | None:
     return _bbox_top_y(_table_assignment_bbox(table))
+
+
+def _table_in_range(
+    table: ParsedTable,
+    start_page: int,
+    start_y: float | None,
+    end_page: int,
+    end_y: float | None,
+) -> bool:
+    top_values = [_bbox_top_y(bbox) for bbox in _table_position_bboxes(table)]
+    if not top_values:
+        top_values = [None]
+    return any(_item_in_range(table.page_no, top_y, start_page, start_y, end_page, end_y) for top_y in top_values)
 
 
 def _text_signature(text: str) -> str:
@@ -1603,9 +1624,8 @@ def _package_compound_materials(
                 child_tables = [
                     table
                     for table in scoped_tables
-                    if _item_in_range(
-                        table.page_no,
-                        _table_assignment_top_y(table),
+                    if _table_in_range(
+                        table,
                         child_start_page,
                         child_start_y,
                         child_end_page,
@@ -2212,9 +2232,8 @@ def _write_parent_preface_packages(
         scoped_tables = [
             table
             for table in tables
-            if _item_in_range(
-                table.page_no,
-                _table_assignment_top_y(table),
+            if _table_in_range(
+                table,
                 int(scope["start_page"]),
                 scope.get("start_y"),
                 int(scope["end_page"]),
@@ -2559,9 +2578,8 @@ def package_module_artifacts(
                 module_tables = [
                     table
                     for table in module_tables
-                    if _item_in_range(
-                        table.page_no,
-                        _table_assignment_top_y(table),
+                    if _table_in_range(
+                        table,
                         int(candidate_scope["start_page"]),
                         candidate_scope.get("start_y"),
                         int(candidate_scope["end_page"]),
@@ -2572,9 +2590,8 @@ def package_module_artifacts(
                 module_tables = [
                     table
                     for table in module_tables
-                    if _item_in_range(
-                        table.page_no,
-                        _table_assignment_top_y(table),
+                    if _table_in_range(
+                        table,
                         int(attachment_scope["start_page"]),
                         attachment_scope.get("start_y"),
                         int(attachment_scope["end_page"]),
