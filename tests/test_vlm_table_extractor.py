@@ -288,7 +288,7 @@ def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, 
     assert enhanced[0].table_model["cells"][0]["text"] == "包05"
 
 
-def test_enhance_tables_with_vlm_calls_model_even_for_reliable_pdfplumber_geometry_table(tmp_path: Path, monkeypatch) -> None:
+def test_enhance_tables_with_vlm_keeps_reliable_pdfplumber_when_vlm_is_weaker(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     table_model = {
@@ -331,10 +331,14 @@ def test_enhance_tables_with_vlm_calls_model_even_for_reliable_pdfplumber_geomet
         return (
             {
                 "source": "paddleocr_vl",
-                "row_count": 1,
-                "col_count": 2,
-                "rows": [["VLM", "结果"]],
-                "cells": [{"row": 0, "col": 0, "text": "VLM", "rowspan": 1, "colspan": 1}],
+                "row_count": 3,
+                "col_count": 1,
+                "rows": [["运行维护"], ["1(100)指标"], ["项目名称"]],
+                "cells": [
+                    {"row": 0, "col": 0, "text": "运行维护", "rowspan": 1, "colspan": 1},
+                    {"row": 1, "col": 0, "text": "1(100)指标", "rowspan": 1, "colspan": 1},
+                    {"row": 2, "col": 0, "text": "项目名称", "rowspan": 1, "colspan": 1},
+                ],
                 "merged_cells": [],
             },
             {"id": "vlm-ok"},
@@ -352,8 +356,11 @@ def test_enhance_tables_with_vlm_calls_model_even_for_reliable_pdfplumber_geomet
     )
 
     assert enhanced[0].table_id == "pdfplumber-table"
-    assert enhanced[0].table_model["source"] == "paddleocr_vl"
-    assert enhanced[0].table_model["rows"] == [["VLM", "结果"]]
+    assert enhanced[0].table_model["source"] == "pdfplumber_geometry"
+    assert enhanced[0].table_model["rows"] == table_model["rows"]
+    assert enhanced[0].table_model_source == "pdfplumber_geometry"
+    assert enhanced[0].vlm_table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].vlm_selected is False
     assert calls == ["render", "call"]
     assert not getattr(enhanced[0], "vlm_error", None)
     assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}

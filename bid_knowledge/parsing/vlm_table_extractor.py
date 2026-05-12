@@ -9,6 +9,7 @@ from threading import Lock
 from pathlib import Path
 from typing import Any, Callable
 
+from bid_knowledge.parsing.table_model import looks_like_sparse_fragmented_table
 from bid_knowledge.schemas.models import ParsedTable
 from bid_knowledge.utils.io_utils import ensure_dir, write_json
 
@@ -150,6 +151,81 @@ def _parse_table_model_text(text: str) -> dict[str, Any]:
     }
 
 
+def _table_model_rows(model: dict[str, Any] | None) -> list[list[Any]]:
+    if not isinstance(model, dict):
+        return []
+    rows = model.get("rows")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, list)]
+    row_count = int(model.get("row_count") or 0)
+    col_count = int(model.get("col_count") or 0)
+    cells = model.get("cells")
+    if row_count <= 0 or col_count <= 0 or not isinstance(cells, list):
+        return []
+    grid = [["" for _ in range(col_count)] for _ in range(row_count)]
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        try:
+            row = int(cell.get("row") or 0)
+            col = int(cell.get("col") or 0)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= row < row_count and 0 <= col < col_count:
+            grid[row][col] = str(cell.get("text") or "")
+    return grid
+
+
+def _non_empty_text_count(model: dict[str, Any] | None) -> int:
+    if not isinstance(model, dict):
+        return 0
+    row_text_count = sum(1 for row in _table_model_rows(model) for cell in row if str(cell or "").strip())
+    cells = model.get("cells")
+    if isinstance(cells, list):
+        cell_text_count = sum(1 for cell in cells if isinstance(cell, dict) and str(cell.get("text") or "").strip())
+        return max(row_text_count, cell_text_count)
+    return row_text_count
+
+
+def _table_model_quality_score(model: dict[str, Any] | None) -> int:
+    if not isinstance(model, dict):
+        return -1000
+    rows = _table_model_rows(model)
+    row_count = int(model.get("row_count") or len(rows) or 0)
+    col_count = int(model.get("col_count") or max((len(row) for row in rows), default=0) or 0)
+    non_empty_count = _non_empty_text_count(model)
+    if row_count <= 0 or col_count <= 0 or non_empty_count <= 0:
+        return -1000
+
+    score = row_count * 3 + col_count * 4 + non_empty_count
+    if col_count <= 1:
+        score -= 80
+    if row_count <= 1:
+        score -= 40
+    if bool(model.get("preserves_spans")):
+        score += 45
+    merged_cells = model.get("merged_cells")
+    if isinstance(merged_cells, list) and merged_cells:
+        score += min(30, len(merged_cells) * 5)
+    if looks_like_sparse_fragmented_table(rows):
+        score -= 55
+    return score
+
+
+def _select_table_model(
+    *,
+    original_model: dict[str, Any] | None,
+    vlm_model: dict[str, Any],
+) -> tuple[dict[str, Any], bool, int, int]:
+    original_score = _table_model_quality_score(original_model)
+    vlm_score = _table_model_quality_score(vlm_model)
+    if vlm_score > original_score:
+        return vlm_model, True, original_score, vlm_score
+    if isinstance(original_model, dict):
+        return original_model, False, original_score, vlm_score
+    return vlm_model, True, original_score, vlm_score
+
+
 def _image_to_data_uri(image_path: str | Path) -> str:
     raw = Path(image_path).read_bytes()
     encoded = base64.b64encode(raw).decode("ascii")
@@ -277,14 +353,23 @@ def enhance_tables_with_vlm(
                 max_tokens=max_tokens,
             )
             data = table.model_dump()
+            original_model = data.get("table_model")
+            selected_model, vlm_selected, original_score, vlm_score = _select_table_model(
+                original_model=original_model if isinstance(original_model, dict) else None,
+                vlm_model=table_model,
+            )
+            selected_source = "paddleocr_vl" if vlm_selected else str(selected_model.get("source") or data.get("table_model_source") or data.get("source_type") or "")
             data.update(
                 {
-                    "rows": table_model.get("rows") or table.rows,
-                    "table_model": table_model,
+                    "rows": selected_model.get("rows") or table.rows,
+                    "table_model": selected_model,
                     "vlm_table_model": table_model,
                     "vlm_raw_response": raw_response,
                     "vlm_error": None,
-                    "table_model_source": "paddleocr_vl",
+                    "vlm_selected": vlm_selected,
+                    "vlm_quality_score": vlm_score,
+                    "original_table_quality_score": original_score,
+                    "table_model_source": selected_source,
                     "table_image_path": str(image_path),
                 }
             )
