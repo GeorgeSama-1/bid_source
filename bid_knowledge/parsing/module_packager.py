@@ -9,6 +9,7 @@ from typing import Any, Callable
 from bid_knowledge.matching.normalizer import normalize_section_title
 from bid_knowledge.parsing.attachment_asset_exporter import sanitize_asset_name
 from bid_knowledge.parsing.review_index_parser import align_business_review_index_entries, build_precise_folder_ranges, parse_business_review_index
+from bid_knowledge.parsing.table_model import looks_like_sparse_fragmented_table
 from bid_knowledge.schemas.models import (
     CompoundInstanceMeta,
     MaterialItemRef,
@@ -638,6 +639,8 @@ def _render_table_markdown(rows: list[list[Any]]) -> str:
 
 def _should_inline_table_markdown(rows: list[list[Any]]) -> bool:
     if not rows:
+        return False
+    if looks_like_sparse_fragmented_table(rows):
         return False
     width = max((len(row) for row in rows if isinstance(row, list)), default=0)
     if width == 0:

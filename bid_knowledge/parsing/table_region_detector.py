@@ -69,6 +69,26 @@ def _bbox_overlap_ratio(bbox: list[float], other: list[float]) -> float:
     return intersection / min(area, other_area)
 
 
+def _bbox_overlap_area_ratio(bbox: list[float], other: list[float]) -> float:
+    x0, y0, x1, y1 = bbox[:4]
+    ox0, oy0, ox1, oy1 = other[:4]
+    ix0 = max(x0, ox0)
+    iy0 = max(y0, oy0)
+    ix1 = min(x1, ox1)
+    iy1 = min(y1, oy1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    intersection = (ix1 - ix0) * (iy1 - iy0)
+    area = max((x1 - x0) * (y1 - y0), 1.0)
+    return intersection / area
+
+
+def _bbox_center_inside(bbox: list[float], other: list[float]) -> bool:
+    center_x = (float(bbox[0]) + float(bbox[2])) / 2.0
+    center_y = (float(bbox[1]) + float(bbox[3])) / 2.0
+    return float(other[0]) <= center_x <= float(other[2]) and float(other[1]) <= center_y <= float(other[3])
+
+
 def _union_bbox(bbox: list[float], other: list[float]) -> list[float]:
     return [
         min(float(bbox[0]), float(other[0])),
@@ -239,6 +259,7 @@ def _filter_regions_overlapping_images(
     *,
     page_sizes: dict[int, tuple[float, float]] | None = None,
     overlap_threshold: float = 0.65,
+    table_area_overlap_threshold: float = 0.3,
 ) -> list[CandidateTableRegion]:
     page_sizes = page_sizes or {}
     masks = _image_masks_from_images(images)
@@ -251,7 +272,11 @@ def _filter_regions_overlapping_images(
                 item
                 for item in masks
                 if int(item.get("page_no") or 0) == region.page_no
-                and _bbox_overlap_ratio(region.bbox, item["bbox"]) >= overlap_threshold
+                and (
+                    _bbox_overlap_ratio(region.bbox, item["bbox"]) >= overlap_threshold
+                    or _bbox_center_inside(region.bbox, item["bbox"])
+                    or _bbox_overlap_area_ratio(region.bbox, item["bbox"]) >= table_area_overlap_threshold
+                )
             ),
             None,
         )

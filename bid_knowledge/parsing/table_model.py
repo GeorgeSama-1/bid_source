@@ -111,6 +111,20 @@ def build_table_model_from_rows(
     }
 
 
+def looks_like_sparse_fragmented_table(rows: list[list[Any]]) -> bool:
+    normalized_rows = [[clean_text(cell) for cell in row] for row in rows if isinstance(row, list)]
+    width = max((len(row) for row in normalized_rows), default=0)
+    if width < 6:
+        return False
+    total_cells = sum(len(row) for row in normalized_rows)
+    if total_cells <= 0:
+        return False
+    non_empty = [cell for row in normalized_rows for cell in row if cell]
+    empty_ratio = (total_cells - len(non_empty)) / total_cells
+    short_ratio = sum(1 for cell in non_empty if len(cell) <= 1) / max(len(non_empty), 1)
+    return empty_ratio >= 0.55 or short_ratio >= 0.65
+
+
 def _cell_bbox(cell: Any) -> list[float] | None:
     bbox = getattr(cell, "bbox", cell)
     if bbox is None or not isinstance(bbox, list | tuple) or len(bbox) < 4:

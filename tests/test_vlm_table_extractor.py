@@ -288,7 +288,7 @@ def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, 
     assert enhanced[0].table_model["cells"][0]["text"] == "包05"
 
 
-def test_enhance_tables_with_vlm_skips_reliable_pdfplumber_geometry_table(tmp_path: Path, monkeypatch) -> None:
+def test_enhance_tables_with_vlm_calls_model_even_for_reliable_pdfplumber_geometry_table(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     table_model = {
@@ -319,13 +319,26 @@ def test_enhance_tables_with_vlm_skips_reliable_pdfplumber_geometry_table(tmp_pa
 
     calls: list[str] = []
 
+    crop_path = tmp_path / "reliable-table.png"
+    crop_path.write_bytes(b"fake-png")
+
     def record_render(*_, **__):
         calls.append("render")
-        return tmp_path / "should-not-exist.png"
+        return crop_path
 
     def record_call(*_, **__):
         calls.append("call")
-        return ({}, {})
+        return (
+            {
+                "source": "paddleocr_vl",
+                "row_count": 1,
+                "col_count": 2,
+                "rows": [["VLM", "结果"]],
+                "cells": [{"row": 0, "col": 0, "text": "VLM", "rowspan": 1, "colspan": 1}],
+                "merged_cells": [],
+            },
+            {"id": "vlm-ok"},
+        )
 
     monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._render_table_crop", record_render)
     monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", record_call)
@@ -339,10 +352,11 @@ def test_enhance_tables_with_vlm_skips_reliable_pdfplumber_geometry_table(tmp_pa
     )
 
     assert enhanced[0].table_id == "pdfplumber-table"
-    assert enhanced[0].table_model == table_model
-    assert calls == []
+    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["rows"] == [["VLM", "结果"]]
+    assert calls == ["render", "call"]
     assert not getattr(enhanced[0], "vlm_error", None)
-    assert not getattr(enhanced[0], "vlm_raw_response", None)
+    assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
 
 
 def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry(tmp_path: Path, monkeypatch) -> None:
@@ -403,6 +417,75 @@ def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry
     assert enhanced[0].table_model["source"] == "paddleocr_vl"
     assert enhanced[0].table_model["row_count"] == 3
     assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
+
+
+def test_enhance_tables_with_vlm_calls_model_for_sparse_fragmented_wide_pdfplumber_geometry(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    crop_path = tmp_path / "debug_table_regions" / "page579.png"
+    crop_path.parent.mkdir()
+    crop_path.write_bytes(b"fake-png")
+    rows = [
+        ["", "", "", "序", "", "", "", "", "出具", "", "出具的报告名称", "", ""],
+        ["", "号", "", "", "年份", "", "", "", "", "", "", "时间", ""],
+        ["", "1", "", "", "", "", "", "", "", "", "", "", ""],
+        ["2", "", "", "", "", "", "", "2025", "", "", "运行及评价证明", "", ""],
+        ["3", "", "", "", "", "", "", "2022", "", "", "履约评价证明", "", ""],
+        ["", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ]
+    cells = [
+        {"row": row_index, "col": col_index, "text": text, "rowspan": 1, "colspan": 1}
+        for row_index, row in enumerate(rows)
+        for col_index, text in enumerate(row)
+    ]
+    table_model = {
+        "schema_version": "table_model_v1",
+        "source": "pdfplumber_geometry",
+        "row_count": len(rows),
+        "col_count": 13,
+        "rows": rows,
+        "cells": cells,
+        "merged_cells": [],
+        "preserves_spans": False,
+    }
+    table = ParsedTable(
+        table_id="table-group_8642dd7bfff8-p1",
+        page_no=579,
+        rows=rows,
+        bbox=[35.4, 44.3, 559.0, 767.0],
+        table_model=table_model,
+        table_image_path=str(crop_path),
+        candidate_detectors=["pp_structure"],
+    )
+    calls: list[str] = []
+
+    def fake_call(*, image_path, endpoint, model, api_key=None, request_timeout=180, max_tokens=4096):
+        calls.append(str(image_path))
+        return (
+            {
+                "source": "paddleocr_vl",
+                "row_count": 3,
+                "col_count": 4,
+                "rows": [["序号", "年份", "出具的报告名称", "出具时间"], ["1", "2025", "运行及评价证明", ""]],
+                "cells": [{"row": 0, "col": 0, "text": "序号", "rowspan": 1, "colspan": 1}],
+                "merged_cells": [],
+            },
+            {"id": "vlm-ok"},
+        )
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", fake_call)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert calls == [str(crop_path)]
+    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["rows"][0] == ["序号", "年份", "出具的报告名称", "出具时间"]
 
 
 def test_enhance_tables_with_vlm_writes_incremental_results_as_each_table_finishes(tmp_path: Path, monkeypatch) -> None:

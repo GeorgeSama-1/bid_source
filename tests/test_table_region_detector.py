@@ -304,6 +304,35 @@ def test_filter_regions_overlapping_pp_structure_image_boxes() -> None:
     assert regions[0].evidence["filtered_image_source"] == "pp_structure"
 
 
+def test_filter_regions_overlapping_images_drops_table_when_center_falls_inside_image() -> None:
+    regions = [
+        CandidateTableRegion(region_id="image-backed-table", page_no=1, bbox=[0, 0, 100, 100], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 1, "rect": [40, 40, 200, 200]},
+    ]
+
+    filtered = _filter_regions_overlapping_images(regions, images)
+
+    assert filtered == []
+    assert regions[0].evidence["filtered_reason"] == "overlaps_image"
+    assert regions[0].evidence["filtered_image_id"] == "img-1"
+
+
+def test_filter_regions_overlapping_images_drops_table_with_meaningful_partial_overlap() -> None:
+    regions = [
+        CandidateTableRegion(region_id="partial-image-table", page_no=1, bbox=[0, 0, 100, 100], detectors=["pp_structure"], confidence=0.8),
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 1, "rect": [50, 0, 150, 100]},
+    ]
+
+    filtered = _filter_regions_overlapping_images(regions, images)
+
+    assert filtered == []
+    assert regions[0].evidence["filtered_reason"] == "overlaps_image"
+
+
 def test_rect_has_table_text_evidence_requires_enough_text_blocks() -> None:
     class FakePage:
         def __init__(self, blocks):

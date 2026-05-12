@@ -1511,6 +1511,48 @@ def test_package_module_artifacts_links_fragmented_wide_table_instead_of_inline_
     assert "| 序 | 号 | 项 | 目 | 名 | 称 | 金 | 额 |" not in material_md
 
 
+def test_package_module_artifacts_links_sparse_wide_table_instead_of_inline_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 部分业主出具的履约优秀证明8份",
+            579,
+            579,
+            "部分业主出具的履约优秀证明8份",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=579, text="部分业主出具的履约优秀证明8份", bbox=[0, 80, 260, 100], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="sparse-wide-table",
+            page_no=579,
+            rows=[
+                ["", "", "", "序", "", "", "", "", "出具", "", "出具的报告名称", "", ""],
+                ["", "号", "", "", "年份", "", "", "", "", "", "", "时间", ""],
+                ["", "1", "", "", "", "", "", "", "", "", "", "", ""],
+                ["2", "", "", "", "", "", "", "2025", "", "", "运行及评价证明", "", ""],
+                ["3", "", "", "", "", "", "", "2022", "", "", "履约评价证明", "", ""],
+            ],
+            bbox=[10, 130, 500, 360],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (
+        tmp_path / "modules" / "补充文件" / "部分业主出具的履约优秀证明8份" / "material.md"
+    ).read_text(encoding="utf-8")
+    assert "[表格：部分业主出具的履约优秀证明8份_表1](table_items/部分业主出具的履约优秀证明8份_表1.json)" in material_md
+    assert "|  |  |  | 序 |" not in material_md
+
+
 def test_package_module_artifacts_keeps_parent_preface_before_first_child_section(tmp_path: Path) -> None:
     candidates = [
         _candidate(

@@ -234,27 +234,6 @@ def _call_vlm_table_model(
     return table_model, raw_response
 
 
-def _has_reliable_pdfplumber_geometry(table: ParsedTable) -> bool:
-    table_model = getattr(table, "table_model", None)
-    if not isinstance(table_model, dict) or table_model.get("source") != "pdfplumber_geometry":
-        return False
-    rows = table_model.get("rows")
-    cells = table_model.get("cells")
-    try:
-        row_count = int(table_model.get("row_count") or 0)
-        col_count = int(table_model.get("col_count") or 0)
-    except (TypeError, ValueError):
-        return False
-    if not isinstance(rows, list) or not rows or not isinstance(cells, list) or not cells:
-        return False
-    if row_count < 2 or col_count < 2 or len(cells) < 4:
-        return False
-    detectors = getattr(table, "candidate_detectors", None) or []
-    if "pp_structure" in detectors and (row_count <= 2 or col_count <= 2 or len(cells) <= 4):
-        return False
-    return True
-
-
 def enhance_tables_with_vlm(
     *,
     pdf_path: str | Path,
@@ -283,8 +262,6 @@ def enhance_tables_with_vlm(
 
     def process_one(index_and_table: tuple[int, ParsedTable]) -> tuple[int, ParsedTable]:
         _index, table = index_and_table
-        if _has_reliable_pdfplumber_geometry(table):
-            return _index, table
         try:
             existing_image_path = getattr(table, "table_image_path", "")
             if existing_image_path and Path(existing_image_path).exists():
