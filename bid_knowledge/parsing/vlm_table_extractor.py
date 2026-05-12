@@ -212,6 +212,20 @@ def _table_model_quality_score(model: dict[str, Any] | None) -> int:
     return score
 
 
+def _is_usable_vlm_table_model(model: dict[str, Any] | None) -> bool:
+    if not isinstance(model, dict):
+        return False
+    rows = _table_model_rows(model)
+    row_count = int(model.get("row_count") or len(rows) or 0)
+    col_count = int(model.get("col_count") or max((len(row) for row in rows), default=0) or 0)
+    non_empty_count = _non_empty_text_count(model)
+    if row_count < 2 or col_count < 2 or non_empty_count < 4:
+        return False
+    if looks_like_sparse_fragmented_table(rows):
+        return False
+    return True
+
+
 def _select_table_model(
     *,
     original_model: dict[str, Any] | None,
@@ -219,11 +233,9 @@ def _select_table_model(
 ) -> tuple[dict[str, Any], bool, int, int]:
     original_score = _table_model_quality_score(original_model)
     vlm_score = _table_model_quality_score(vlm_model)
-    if vlm_score > original_score:
+    if _is_usable_vlm_table_model(vlm_model) or not isinstance(original_model, dict) or original_score <= -1000:
         return vlm_model, True, original_score, vlm_score
-    if isinstance(original_model, dict):
-        return original_model, False, original_score, vlm_score
-    return vlm_model, True, original_score, vlm_score
+    return original_model, False, original_score, vlm_score
 
 
 def _image_to_data_uri(image_path: str | Path) -> str:

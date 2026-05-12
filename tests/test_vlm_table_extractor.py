@@ -366,6 +366,83 @@ def test_enhance_tables_with_vlm_keeps_reliable_pdfplumber_when_vlm_is_weaker(tm
     assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
 
 
+def test_enhance_tables_with_vlm_prefers_valid_vlm_over_rich_pdfplumber_geometry(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    crop_path = tmp_path / "debug_table_regions" / "page574.png"
+    crop_path.parent.mkdir()
+    crop_path.write_bytes(b"fake-png")
+    pdf_rows = [
+        ["运行维护", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护"],
+        ["1(100)", "1(100)", "1(100)", "1(100)", "1(100)", "1(100)", "1(100)", "1(100)", "1(100)", "1(100)"],
+        ["指标", "项目名称", "评价开始日期", "评价截止日期", "供应商", "供应商", "物资", "物资", "物资", "等级"],
+        ["编码", "名称", "大类", "中类", "小类", "运行维护", "运行维护", "运行维护", "运行维护", "运行维护"],
+    ]
+    pdf_table_model = {
+        "schema_version": "table_model_v1",
+        "source": "pdfplumber_geometry",
+        "row_count": 4,
+        "col_count": 10,
+        "rows": pdf_rows,
+        "cells": [
+            {"row": 0, "col": 0, "text": "运行维护", "rowspan": 1, "colspan": 10},
+            {"row": 1, "col": 0, "text": "1(100)", "rowspan": 1, "colspan": 10},
+            {"row": 2, "col": 0, "text": "指标", "rowspan": 1, "colspan": 1},
+            {"row": 2, "col": 1, "text": "项目名称", "rowspan": 1, "colspan": 1},
+            {"row": 3, "col": 0, "text": "编码", "rowspan": 1, "colspan": 1},
+            {"row": 3, "col": 1, "text": "名称", "rowspan": 1, "colspan": 1},
+        ],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 10},
+            {"row": 1, "col": 0, "rowspan": 1, "colspan": 10},
+        ],
+        "preserves_spans": True,
+    }
+    table = ParsedTable(
+        table_id="table-group-afaf31f7e922",
+        page_no=574,
+        rows=pdf_rows,
+        bbox=[5.6, 167.6, 835.8, 438.2],
+        table_model=pdf_table_model,
+        table_image_path=str(crop_path),
+        candidate_detectors=["pdfplumber", "pp_structure"],
+    )
+
+    def fake_call(*, image_path, endpoint, model, api_key=None, request_timeout=180, max_tokens=4096):
+        assert str(image_path) == str(crop_path)
+        return (
+            {
+                "source": "paddleocr_vl",
+                "row_count": 4,
+                "col_count": 10,
+                "rows": [
+                    ["项目名称", "评价开始日期", "评价截止日期", "供应商编码", "供应商名称", "物资大类", "物资中类", "物资小类", "运行维护1(100)", "运行维护1(100)指标等级"],
+                    ["01-2025 年35kV及以上输变电一次设备和装置材料供应商评价", "2022-07-01", "2025-06-30", "1000015059", "宁波理工环境能源科技股份有限公司", "二次设备", "测控及在线监测系统", "变压器油中溶解气体在线监测装置", "95.92", "A"],
+                    ["05-2025 年特高压交流输变电工程专用设备供应商评价", "2022-07-01", "2025-06-30", "", "", "", "", "", "96.65", "A"],
+                    ["05-2024 年第一次特高压交流输变电工程专用设备绩效评价", "2021-01-01", "2023-12-31", "", "", "", "", "", "96.77", "A"],
+                ],
+                "cells": [],
+                "merged_cells": [],
+            },
+            {"id": "vlm-ok"},
+        )
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", fake_call)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["rows"][0][0] == "项目名称"
+    assert enhanced[0].table_model_source == "paddleocr_vl"
+    assert enhanced[0].vlm_selected is True
+
+
 def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
