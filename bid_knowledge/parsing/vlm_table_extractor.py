@@ -27,6 +27,16 @@ JSON schema:
 }
 row 和 col 从 0 开始。必须尽量保留原表格行列结构和合并单元格。"""
 
+TABLE_TO_JSON_RETRY_PROMPT = TABLE_TO_JSON_PROMPT + """
+
+重新识别：上一次输出没有返回可用的表格结构。
+请不要只提取文字内容。必须把表格恢复为二维结构：
+- 每个单元格必须放入 cells。
+- 每个 cells 元素必须包含 row、col、text、rowspan、colspan。
+- row_count 和 col_count 必须大于 0。
+- 如果某个单元格为空，也要保留它在表格中的位置。
+- 只返回一个 JSON object，不能返回 Markdown 表格、解释、列表或普通文本。"""
+
 
 def _extract_response_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices") or []
@@ -212,18 +222,14 @@ def _table_model_quality_score(model: dict[str, Any] | None) -> int:
     return score
 
 
-def _is_usable_vlm_table_model(model: dict[str, Any] | None) -> bool:
+def _has_non_empty_vlm_table_model(model: dict[str, Any] | None) -> bool:
     if not isinstance(model, dict):
         return False
     rows = _table_model_rows(model)
     row_count = int(model.get("row_count") or len(rows) or 0)
     col_count = int(model.get("col_count") or max((len(row) for row in rows), default=0) or 0)
     non_empty_count = _non_empty_text_count(model)
-    if row_count < 2 or col_count < 2 or non_empty_count < 4:
-        return False
-    if looks_like_sparse_fragmented_table(rows):
-        return False
-    return True
+    return row_count > 0 and col_count > 0 and non_empty_count > 0
 
 
 def _select_table_model(
@@ -233,7 +239,7 @@ def _select_table_model(
 ) -> tuple[dict[str, Any], bool, int, int]:
     original_score = _table_model_quality_score(original_model)
     vlm_score = _table_model_quality_score(vlm_model)
-    if _is_usable_vlm_table_model(vlm_model) or not isinstance(original_model, dict) or original_score <= -1000:
+    if _has_non_empty_vlm_table_model(vlm_model) or not isinstance(original_model, dict) or original_score <= -1000:
         return vlm_model, True, original_score, vlm_score
     return original_model, False, original_score, vlm_score
 
@@ -297,29 +303,54 @@ def _call_vlm_table_model(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import requests
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a table recognition engine. Return strict JSON only."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": TABLE_TO_JSON_PROMPT},
-                    {"type": "image_url", "image_url": {"url": _image_to_data_uri(image_path)}},
-                ],
-            },
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
-    }
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    response = requests.post(endpoint, headers=headers, json=payload, timeout=request_timeout)
-    response.raise_for_status()
-    raw_response = response.json()
-    table_model = _parse_table_model_text(_extract_response_text(raw_response))
-    return table_model, raw_response
+    image_data_uri = _image_to_data_uri(image_path)
+    last_error: Exception | None = None
+    last_raw_response: dict[str, Any] | None = None
+
+    for attempt, prompt in enumerate([TABLE_TO_JSON_PROMPT, TABLE_TO_JSON_RETRY_PROMPT], start=1):
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a table recognition engine. Return strict JSON only."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data_uri}},
+                    ],
+                },
+            ],
+            "temperature": 0,
+            "max_tokens": max_tokens,
+        }
+        response = requests.post(endpoint, headers=headers, json=payload, timeout=request_timeout)
+        response.raise_for_status()
+        raw_response = response.json()
+        last_raw_response = raw_response
+        try:
+            table_model = _parse_table_model_text(_extract_response_text(raw_response))
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+            if attempt == 1:
+                continue
+            raise
+        if _has_non_empty_vlm_table_model(table_model):
+            if attempt > 1:
+                table_model["vlm_retry_count"] = attempt - 1
+                raw_response["vlm_retry_count"] = attempt - 1
+            return table_model, raw_response
+        last_error = ValueError("VLM table response did not contain non-empty table structure.")
+        if attempt == 1:
+            continue
+
+    if last_error:
+        if last_raw_response is not None:
+            raise ValueError(f"{last_error}; last_response={_extract_response_text(last_raw_response)[:500]}") from last_error
+        raise last_error
+    raise ValueError("VLM table response did not contain non-empty table structure.")
 
 
 def enhance_tables_with_vlm(

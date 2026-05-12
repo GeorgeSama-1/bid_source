@@ -197,6 +197,38 @@ def test_call_vlm_table_model_adds_bearer_authorization_when_api_key_is_present(
     assert captured_headers["Authorization"] == "Bearer sk-test"
 
 
+def test_call_vlm_table_model_retries_when_first_response_is_plain_text(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "table.png"
+    image_path.write_bytes(b"fake-png")
+    prompts: list[str] = []
+    responses = [
+        "项目名称\n评价开始日期\n评价截止日期\n宁波理工环境能源科技股份有限公司",
+        '{"row_count":1,"col_count":3,"cells":[{"row":0,"col":0,"text":"项目名称","rowspan":1,"colspan":1},{"row":0,"col":1,"text":"评价开始日期","rowspan":1,"colspan":1},{"row":0,"col":2,"text":"评价截止日期","rowspan":1,"colspan":1}]}',
+    ]
+
+    def fake_post(_endpoint, headers=None, json=None, timeout=None):
+        prompts.append(json["messages"][1]["content"][0]["text"])
+        content = responses.pop(0)
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"choices": [{"message": {"content": content}}]},
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    table_model, raw = _call_vlm_table_model(
+        image_path=image_path,
+        endpoint="http://127.0.0.1:8688/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert table_model["col_count"] == 3
+    assert table_model["rows"][0] == ["项目名称", "评价开始日期", "评价截止日期"]
+    assert raw["choices"][0]["message"]["content"].startswith('{"row_count"')
+    assert len(prompts) == 2
+    assert "重新识别" in prompts[1]
+
+
 def test_enhance_tables_with_vlm_reads_api_key_from_custom_env_var(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
@@ -288,7 +320,7 @@ def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, 
     assert enhanced[0].table_model["cells"][0]["text"] == "包05"
 
 
-def test_enhance_tables_with_vlm_keeps_reliable_pdfplumber_when_vlm_is_weaker(tmp_path: Path, monkeypatch) -> None:
+def test_enhance_tables_with_vlm_uses_non_empty_vlm_even_when_pdfplumber_looks_richer(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
     table_model = {
@@ -356,11 +388,11 @@ def test_enhance_tables_with_vlm_keeps_reliable_pdfplumber_when_vlm_is_weaker(tm
     )
 
     assert enhanced[0].table_id == "pdfplumber-table"
-    assert enhanced[0].table_model["source"] == "pdfplumber_geometry"
-    assert enhanced[0].table_model["rows"] == table_model["rows"]
-    assert enhanced[0].table_model_source == "pdfplumber_geometry"
+    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["rows"] == [["运行维护"], ["1(100)指标"], ["项目名称"]]
+    assert enhanced[0].table_model_source == "paddleocr_vl"
     assert enhanced[0].vlm_table_model["source"] == "paddleocr_vl"
-    assert enhanced[0].vlm_selected is False
+    assert enhanced[0].vlm_selected is True
     assert calls == ["render", "call"]
     assert not getattr(enhanced[0], "vlm_error", None)
     assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
