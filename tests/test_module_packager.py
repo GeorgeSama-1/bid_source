@@ -1708,6 +1708,27 @@ def test_backfill_refreshes_child_links_when_parent_markdown_already_exists(tmp_
     assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
 
 
+def test_backfill_sorts_child_links_by_section_number(tmp_path: Path) -> None:
+    parent_dir = tmp_path / "modules" / "3、 补充文件"
+    for child_name in [
+        "3.10、 制造商授权委托书（无，我公司为制造商投标）",
+        "3.1、 投标保证金",
+        "3.9、 企业名称变更",
+        "3.14、 其他（无）",
+        "3.2、 投标人与国家电网公司系统人员关系说明",
+    ]:
+        child_dir = parent_dir / child_name
+        child_dir.mkdir(parents=True)
+        (child_dir / "material.md").write_text(f"# {child_name}\n", encoding="utf-8")
+
+    _backfill_missing_material_indexes(tmp_path / "modules")
+
+    parent_md = (parent_dir / "material.md").read_text(encoding="utf-8")
+    assert parent_md.index("[3.1、 投标保证金]") < parent_md.index("[3.2、 投标人与国家电网公司系统人员关系说明]")
+    assert parent_md.index("[3.9、 企业名称变更]") < parent_md.index("[3.10、 制造商授权委托书（无，我公司为制造商投标）]")
+    assert parent_md.index("[3.10、 制造商授权委托书（无，我公司为制造商投标）]") < parent_md.index("[3.14、 其他（无）]")
+
+
 def test_package_module_artifacts_renders_field_value_text_blocks_as_table(tmp_path: Path) -> None:
     candidates = [
         _candidate(

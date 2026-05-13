@@ -77,6 +77,19 @@ def _item_filename(title: str, extension: str) -> str:
     return f"{shortened}_{digest}.{extension}"
 
 
+def _section_number_sort_key(title: str) -> tuple[tuple[int, ...], str]:
+    stripped = str(title or "").strip()
+    match = re.match(r"^[（(]?(\d+(?:\.\d+)*)(?:[）)]|[、.．]|\s)", stripped)
+    if not match:
+        return ((), stripped)
+    numbers = tuple(int(part) for part in match.group(1).split("."))
+    return (numbers, stripped)
+
+
+def _material_markdown_entry_sort_key(entry: tuple[str, Path]) -> tuple[tuple[int, ...], str]:
+    return _section_number_sort_key(entry[0])
+
+
 def _text_item_base_title(folder_title: str) -> str:
     title = re.sub(r"^\s*\d+(?:\.\d+)*[、.．]\s*", "", folder_title or "").strip()
     title = re.sub(r"^\s*[（(]?\d+(?:\.\d+)*[）)]?[、.．]?\s*", "", title).strip()
@@ -810,7 +823,7 @@ def _write_material_index_markdown(
 ) -> Path:
     lines = [f"# {title}", ""]
     if entries:
-        for entry_title, target_path in entries:
+        for entry_title, target_path in sorted(entries, key=_material_markdown_entry_sort_key):
             lines.append(f"- [{entry_title}]({_relative_markdown_path(material_dir, target_path)})")
     else:
         lines.append("暂无可直接复用内容。")
@@ -830,7 +843,7 @@ def _backfill_missing_material_indexes(root_dir: Path) -> None:
     for directory in directories:
         child_entries = [
             (child.name, child / "material.md")
-            for child in sorted(directory.iterdir(), key=lambda item: item.name)
+            for child in sorted(directory.iterdir(), key=lambda item: _section_number_sort_key(item.name))
             if child.is_dir() and (child / "material.md").exists()
         ]
         if (directory / "material.md").exists():
@@ -2201,7 +2214,7 @@ def _find_parent_preface_scope(
 def _direct_child_markdown_entries(parent_dir: Path) -> list[tuple[str, Path]]:
     return [
         (child.name, child / "material.md")
-        for child in sorted(parent_dir.iterdir(), key=lambda item: item.name)
+        for child in sorted(parent_dir.iterdir(), key=lambda item: _section_number_sort_key(item.name))
         if child.is_dir() and (child / "material.md").exists()
     ]
 
