@@ -100,6 +100,9 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
 
     def fake_post(_endpoint, headers=None, json=None, timeout=None):
         assert json["max_tokens"] == 4096
+        prompt = json["messages"][1]["content"][0]["text"]
+        assert "恢复可复用的二维表格结构" in prompt
+        assert "不要只提取文字" in prompt
         return SimpleNamespace(
             raise_for_status=lambda: None,
             json=lambda: {

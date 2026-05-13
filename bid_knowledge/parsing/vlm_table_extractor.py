@@ -14,9 +14,24 @@ from bid_knowledge.schemas.models import ParsedTable
 from bid_knowledge.utils.io_utils import ensure_dir, write_json
 
 
-TABLE_TO_JSON_PROMPT = """请识别图片中的表格并输出严格 JSON，不要输出解释、Markdown 或自然语言。
-第一个字符必须是 {，最后一个字符必须是 }。
-JSON schema:
+TABLE_TO_JSON_PROMPT = """你是表格结构识别引擎。请识别图片中的表格，并返回严格 JSON。
+
+任务目标：
+从图片中恢复可复用的二维表格结构，而不是只提取文字。
+
+必须遵守：
+1. 只能返回一个 JSON object，不能返回 Markdown、解释、列表或普通文本。
+2. 第一个字符必须是 {，最后一个字符必须是 }。
+3. 必须返回 row_count、col_count、cells、merged_cells。
+4. cells 中每个单元格必须包含 row、col、text、rowspan、colspan。
+5. row 和 col 从 0 开始。
+6. 必须保留空单元格的位置。
+7. 如果存在合并单元格，必须用 rowspan / colspan 表达，并同步写入 merged_cells。
+8. 不要只提取文字；不要把同一列里的文字拆成多行普通文本。
+9. 不要因为表格线不明显就退化成纯文字识别。
+10. 表头、多级表头、单位、备注都要尽量保留在对应单元格中。
+
+返回格式：
 {
   "row_count": 0,
   "col_count": 0,
@@ -25,7 +40,7 @@ JSON schema:
   ],
   "merged_cells": []
 }
-row 和 col 从 0 开始。必须尽量保留原表格行列结构和合并单元格。"""
+"""
 
 TABLE_TO_JSON_RETRY_PROMPT = TABLE_TO_JSON_PROMPT + """
 
