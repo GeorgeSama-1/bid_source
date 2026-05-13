@@ -25,6 +25,7 @@ from bid_knowledge.parsing.pp_table_extractor import extract_pp_structure_tables
 from bid_knowledge.parsing.section_builder import build_sections
 from bid_knowledge.parsing.table_extractor import extract_tables
 from bid_knowledge.parsing.table_region_detector import detect_candidate_table_regions, group_candidate_table_regions, groups_to_parsed_tables
+from bid_knowledge.parsing.text_block_merger import merge_multiline_heading_blocks
 from bid_knowledge.parsing.toc_leaf_builder import (
     build_toc_leaf_candidates,
     toc_leaf_section_paths,
@@ -510,7 +511,8 @@ def pdf_toc_pipeline_command(
         write_json(parsed_dir / "tables.json", tables)
 
     _pipeline_echo(5 if vlm_table_enabled else 4, total_steps, "Building TOC leaf sections")
-    blocks = _load_blocks(parsed_dir / "text_blocks.json")
+    blocks = merge_multiline_heading_blocks(_load_blocks(parsed_dir / "text_blocks.json"))
+    write_json(parsed_dir / "text_blocks_merged.json", blocks)
     candidates = build_toc_leaf_candidates(
         toc=toc,
         page_count=page_count,
@@ -635,7 +637,7 @@ def pipeline_command(
         tables = extract_tables(pdf, plan=plan, out_path=parsed_dir / "tables.json", progress_callback=progress_callback)
 
     merged_blocks_path = parsed_dir / "text_blocks_merged.json"
-    raw_blocks = _load_blocks(parsed_dir / "text_blocks.json")
+    raw_blocks = merge_multiline_heading_blocks(_load_blocks(parsed_dir / "text_blocks.json"))
     ocr_enabled = _parse_bool_flag(enable_ocr)
     if ocr_enabled:
         pages = _collect_ocr_pages_from_plan(plan)
@@ -683,7 +685,8 @@ def pipeline_command(
     write_json(parsed_dir / "page_layout_masks.json", layout_masks)
 
     _pipeline_echo(7, total_steps, "Building page material stream")
-    merged_blocks = _load_blocks(merged_blocks_path)
+    merged_blocks = merge_multiline_heading_blocks(_load_blocks(merged_blocks_path))
+    write_json(merged_blocks_path, merged_blocks)
     parsed_images = _load_images(parsed_dir / "images.json")
     page_material_stream = _build_page_material_stream_payload(
         blocks=merged_blocks,

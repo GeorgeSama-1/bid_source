@@ -374,8 +374,15 @@ def _ordered_material_items(
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     decorative_text = _decorative_text_signatures(text_blocks)
-    heading_candidates = build_heading_candidates([_block_dict(block) for block in text_blocks if not _is_decorative_text_block(block, decorative_text)])
     table_regions = _table_regions_by_page(table_items)
+    heading_candidates = build_heading_candidates(
+        [
+            _block_dict(block)
+            for block in text_blocks
+            if not _is_decorative_text_block(block, decorative_text)
+            and not _block_inside_any_table(block, table_regions)
+        ]
+    )
     for block in text_blocks:
         if _is_decorative_text_block(block, decorative_text):
             continue
@@ -514,6 +521,20 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
                 {
                     "bbox": [float(value) for value in bbox[:4]],
                     "source_type": str(table.get("source_type") or ""),
+                }
+            )
+    return grouped
+
+
+def _table_regions_from_parsed_tables(tables: list[ParsedTable]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for table in tables:
+        bbox = _table_assignment_bbox(table)
+        if table.page_no and isinstance(bbox, list) and len(bbox) >= 4:
+            grouped[int(table.page_no)].append(
+                {
+                    "bbox": [float(value) for value in bbox[:4]],
+                    "source_type": table.source_type,
                 }
             )
     return grouped
@@ -2664,7 +2685,10 @@ def package_module_artifacts(
                 layout_masks=layout_masks,
                 doc=doc,
             )
-            heading_candidates = build_heading_candidates([_block_dict(block) for block in module_blocks])
+            module_table_regions = _table_regions_from_parsed_tables(module_tables)
+            heading_candidates = build_heading_candidates(
+                [_block_dict(block) for block in module_blocks if not _block_inside_any_table(block, module_table_regions)]
+            )
             path_parts = _section_parts(section_path)
 
             write_json(

@@ -133,6 +133,36 @@ def test_package_module_artifacts_uses_previous_page_heading_when_current_page_h
     assert (module_dir / "安全生产标准化证书_图2.json").exists()
 
 
+def test_package_module_artifacts_ignores_table_internal_text_as_heading(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 3、 补充文件 / 3.8.1、 经营状况",
+            579,
+            579,
+            "3.8.1、 经营状况",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="b1", page_no=579, text="序\n号", bbox=[80, 80, 100, 110], block_no=1),
+    ]
+    tables = [
+        ParsedTable(table_id="table-1", page_no=579, rows=[["序号", "年份"]], bbox=[35, 40, 560, 760]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    table_json = tmp_path / "modules" / "3、 补充文件" / "3.8.1、 经营状况" / "table_items" / "3.8.1、 经营状况_表1.json"
+    payload = json.loads(table_json.read_text(encoding="utf-8"))
+    assert payload["context_title"] == "3.8.1、 经营状况"
+    assert payload["parent_section_title"] == "3.8.1、 经营状况"
+
+
 def test_package_module_artifacts_skips_non_history_items_and_writes_template_capture(tmp_path: Path) -> None:
     candidates = [
         _candidate(
