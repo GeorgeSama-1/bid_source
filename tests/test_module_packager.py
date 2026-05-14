@@ -1497,10 +1497,71 @@ def test_package_module_artifacts_omits_page_stream_text_inside_table_items(tmp_
         page_material_items=page_material_items,
     )
 
-    material_md = (tmp_path / "modules" / "补充文件" / "投标保证金明细表" / "material.md").read_text(encoding="utf-8")
+    material_dir = tmp_path / "modules" / "补充文件" / "投标保证金明细表"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
     assert "| 汇款流水号 | 包号 |" in material_md
     assert "这是表格区域里的拆散文字" not in material_md
     assert "表格之后说明。" in material_md
+    suppressed = [item for item in ordered if item.get("text") == "这是表格区域里的拆散文字"]
+    assert suppressed
+    assert suppressed[0]["material_role"] == "table_text"
+    assert suppressed[0]["suppressed_by_table_id"] == "deposit-table"
+    assert suppressed[0]["suppressed_reason"] == "table_geometry"
+
+
+def test_package_module_artifacts_omits_text_repeated_from_inline_table_cells_even_outside_bbox(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术偏差表",
+            1,
+            1,
+            "技术偏差表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术偏差表", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(
+            block_id="cell-repeat",
+            page_no=1,
+            text="表1 技术特性参数表\n6、乙炔（C₂H₂）\n6.1 最低检测限值：0.5μL/L",
+            bbox=[20, 280, 300, 340],
+            block_no=2,
+        ),
+        PdfTextBlock(block_id="after", page_no=1, text="投标人声明：接受其余全部技术条件。", bbox=[0, 360, 500, 380], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="deviation-table",
+            page_no=1,
+            rows=[
+                ["序号", "偏差事项", "招标文件要求", "投标文件响应"],
+                ["1", "最低检测限值", "表 1 技术特性参数表\n6、乙炔（C2H2）\n6.1 最低检测限值：0.5 μL/L", "0.1 μL/L"],
+            ],
+            bbox=[10, 120, 560, 250],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_dir = tmp_path / "modules" / "技术偏差表"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    assert "| 1 | 最低检测限值 |" in material_md
+    assert "投标人声明：接受其余全部技术条件。" in material_md
+    assert material_md.count("表 1 技术特性参数表") == 1
+    assert material_md.count("最低检测限值") == 2
+    suppressed = [item for item in ordered if item.get("block_id") == "cell-repeat"]
+    assert suppressed
+    assert suppressed[0]["material_role"] == "table_text"
+    assert suppressed[0]["suppressed_by_table_id"] == "deviation-table"
+    assert suppressed[0]["suppressed_reason"] == "table_cell_text"
 
 
 def test_package_module_artifacts_links_fragmented_wide_table_instead_of_inline_markdown(tmp_path: Path) -> None:

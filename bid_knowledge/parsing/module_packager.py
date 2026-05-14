@@ -411,6 +411,7 @@ def _ordered_material_items(
     seen_text_signatures: set[tuple[int, str, tuple[float, ...]]] = set()
     decorative_text = _decorative_text_signatures(text_blocks)
     table_regions = _table_regions_by_page(table_items)
+    table_cell_signatures = _table_cell_signature_map(table_items)
     heading_candidates = build_heading_candidates(
         [
             _block_dict(block)
@@ -424,10 +425,9 @@ def _ordered_material_items(
             continue
         if block.source_type == "ocr":
             continue
-        if _block_inside_any_table(block, table_regions):
-            continue
         seen_text_block_ids.add(block.block_id)
         seen_text_signatures.add(_ordered_text_signature(block.text, block.bbox, block.page_no))
+        table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures)
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -443,6 +443,7 @@ def _ordered_material_items(
                 material_path=material_path,
                 source_type=block.source_type,
                 payload_ref=str(Path(text_item["json_path"]).relative_to(material_dir)) if text_item and text_item.get("json_path") else None,
+                **table_text_role,
             ).model_dump(exclude_none=True)
         )
     for table in table_items:
@@ -461,6 +462,7 @@ def _ordered_material_items(
                 rule_section_path=rule_section_path,
                 material_path=material_path,
                 payload_ref=str(Path(table["json_path"]).relative_to(material_dir)) if table.get("json_path") else None,
+                material_role="table",
             ).model_dump(exclude_none=True)
         )
     for image in image_items:
@@ -480,6 +482,7 @@ def _ordered_material_items(
                 rule_section_path=rule_section_path,
                 material_path=material_path,
                 payload_ref=str(Path(image["json_path"]).relative_to(material_dir)) if image.get("json_path") else None,
+                material_role="image",
             ).model_dump(exclude_none=True)
         )
     for submaterial in submaterial_items or []:
@@ -494,6 +497,7 @@ def _ordered_material_items(
                 rule_section_path=submaterial.get("rule_section_path", rule_section_path),
                 material_path=submaterial.get("material_path", material_path),
                 payload_ref=submaterial.get("payload_ref"),
+                material_role="submaterial",
             ).model_dump(exclude_none=True)
         )
     for stream_item in page_material_items or []:
@@ -501,8 +505,6 @@ def _ordered_material_items(
         if item_type not in {"text", "table", "image"}:
             continue
         if item_type == "table":
-            continue
-        if item_type == "text" and _page_material_text_inside_any_table(stream_item, table_regions):
             continue
         if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
@@ -516,6 +518,9 @@ def _ordered_material_items(
         if nearest:
             raw_title = str(nearest.get("raw_title") or "")
             stream_heading = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
+        material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures) if item_type == "text" else {}
+        if not material_role:
+            material_role = {"material_role": "image" if item_type == "image" else "body_text"}
         ordered.append(
             MaterialItemRef(
                 type=item_type,
@@ -535,6 +540,7 @@ def _ordered_material_items(
                 payload_ref=str(Path(stream_item["json_path"]).relative_to(material_dir)) if stream_item.get("json_path") else stream_item.get("payload_ref"),
                 source_type=stream_item.get("source_type"),
                 payload=stream_item.get("payload") or {},
+                **material_role,
             ).model_dump(exclude_none=True)
         )
     sorted_items = sorted(ordered, key=lambda item: (int(item.get("page_no") or 0), float(item.get("top_y") or 0.0), item["type"]))
@@ -549,6 +555,58 @@ def _page_material_text_inside_any_table(stream_item: dict[str, Any], table_regi
     bbox = stream_item.get("bbox") or []
     page_no = int(stream_item.get("page_no") or 0)
     return _bbox_inside_any_table_region(page_no, bbox, table_regions)
+
+
+def _table_text_role_for_block(
+    block: PdfTextBlock,
+    table_regions: dict[int, list[dict[str, Any]]],
+    table_cell_signatures: dict[str, str],
+) -> dict[str, str]:
+    if block.source_type == "ocr":
+        return {}
+    geometry_table_id = _matching_table_region_id(int(block.page_no), block.bbox, table_regions, block.text)
+    if geometry_table_id:
+        return {
+            "material_role": "table_text",
+            "suppressed_by_table_id": geometry_table_id,
+            "suppressed_reason": "table_geometry",
+        }
+    cell_table_id = _matching_table_cell_text_id(block.text, table_cell_signatures)
+    if cell_table_id:
+        return {
+            "material_role": "table_text",
+            "suppressed_by_table_id": cell_table_id,
+            "suppressed_reason": "table_cell_text",
+        }
+    return {"material_role": "body_text"}
+
+
+def _table_text_role_for_stream_item(
+    stream_item: dict[str, Any],
+    table_regions: dict[int, list[dict[str, Any]]],
+    table_cell_signatures: dict[str, str],
+) -> dict[str, str]:
+    text = str(stream_item.get("text") or "")
+    geometry_table_id = _matching_table_region_id(
+        int(stream_item.get("page_no") or 0),
+        stream_item.get("bbox") or [],
+        table_regions,
+        text,
+    )
+    if geometry_table_id:
+        return {
+            "material_role": "table_text",
+            "suppressed_by_table_id": geometry_table_id,
+            "suppressed_reason": "table_geometry",
+        }
+    cell_table_id = _matching_table_cell_text_id(text, table_cell_signatures)
+    if cell_table_id:
+        return {
+            "material_role": "table_text",
+            "suppressed_by_table_id": cell_table_id,
+            "suppressed_reason": "table_cell_text",
+        }
+    return {}
 
 
 def _ordered_text_signature(text: str, bbox: Any, page_no: int) -> tuple[int, str, tuple[float, ...]]:
@@ -577,14 +635,17 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for table in table_items:
         page_no = int(table.get("page_no") or 0)
-        bbox = table.get("bbox")
-        if page_no and isinstance(bbox, list) and len(bbox) >= 4:
-            grouped[page_no].append(
-                {
-                    "bbox": [float(value) for value in bbox[:4]],
-                    "source_type": str(table.get("source_type") or ""),
-                }
-            )
+        table_id = str(table.get("table_id") or "")
+        for bbox_key in ("bbox", "table_region_bbox"):
+            bbox = table.get(bbox_key)
+            if page_no and isinstance(bbox, list) and len(bbox) >= 4:
+                grouped[page_no].append(
+                    {
+                        "bbox": [float(value) for value in bbox[:4]],
+                        "source_type": str(table.get("source_type") or ""),
+                        "table_id": table_id,
+                    }
+                )
     return grouped
 
 
@@ -597,6 +658,7 @@ def _table_regions_from_parsed_tables(tables: list[ParsedTable]) -> dict[int, li
                 {
                     "bbox": [float(value) for value in bbox[:4]],
                     "source_type": table.source_type,
+                    "table_id": table.table_id,
                 }
             )
     return grouped
@@ -611,8 +673,14 @@ def _block_inside_any_table(block: PdfTextBlock, table_regions: dict[int, list[d
 
 
 def _bbox_inside_any_table_region(page_no: int, bbox: Any, table_regions: dict[int, list[dict[str, Any]]]) -> bool:
+    return _matching_table_region_id(page_no, bbox, table_regions, "") != ""
+
+
+def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, list[dict[str, Any]]], text: str) -> str:
+    if _looks_like_table_caption(text):
+        return ""
     if not isinstance(bbox, list) or len(bbox) < 4:
-        return False
+        return ""
     block_bbox = [float(value) for value in bbox[:4]]
     x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
@@ -622,8 +690,8 @@ def _bbox_inside_any_table_region(page_no: int, bbox: Any, table_regions: dict[i
         inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
         inside_by_overlap = _bbox_overlap_ratio(block_bbox, region["bbox"]) >= 0.15
         if inside_by_center or inside_by_overlap:
-            return True
-    return False
+            return str(region.get("table_id") or "")
+    return ""
 
 
 def _looks_like_table_caption(text: str) -> bool:
@@ -804,6 +872,64 @@ def _flush_text_markdown_lines(buffer: list[dict[str, Any]], seen_texts: set[str
     return lines
 
 
+def _table_cell_text_signatures(rows: list[list[Any]]) -> set[str]:
+    signatures: set[str] = set()
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for cell in row:
+            signature = _table_cell_text_signature(str(cell or ""))
+            if len(signature) >= 6:
+                signatures.add(signature)
+    return signatures
+
+
+def _table_rows_for_signature(table: dict[str, Any]) -> list[list[Any]]:
+    rows = table.get("rows")
+    if isinstance(rows, list):
+        return rows
+    table_model = table.get("table_model") if isinstance(table.get("table_model"), dict) else {}
+    model_rows = table_model.get("rows") if isinstance(table_model, dict) else None
+    return model_rows if isinstance(model_rows, list) else []
+
+
+def _table_cell_signature_map(table_items: list[dict[str, Any]]) -> dict[str, str]:
+    signatures: dict[str, str] = {}
+    for table in table_items:
+        table_id = str(table.get("table_id") or "")
+        if not table_id:
+            continue
+        for signature in _table_cell_text_signatures(_table_rows_for_signature(table)):
+            signatures.setdefault(signature, table_id)
+    return signatures
+
+
+def _table_cell_text_signature(text: str) -> str:
+    normalized = str(text or "")
+    normalized = normalized.replace("₂", "2").replace("μ", "u").replace("µ", "u")
+    return re.sub(r"[\s，,。；;：:、（）()\[\]【】<>《》\-—_]+", "", normalized)
+
+
+def _matching_table_cell_text_id(text: str, table_cell_signatures: dict[str, str]) -> str:
+    signature = _table_cell_text_signature(text)
+    if len(signature) < 6:
+        return ""
+    for cell_signature, table_id in table_cell_signatures.items():
+        if signature == cell_signature or signature in cell_signature or cell_signature in signature:
+            return table_id
+    return ""
+
+
+def _text_repeated_from_table_cells(text: str, table_cell_signatures: set[str]) -> bool:
+    signature = _table_cell_text_signature(text)
+    if len(signature) < 6:
+        return False
+    for cell_signature in table_cell_signatures:
+        if signature == cell_signature or signature in cell_signature or cell_signature in signature:
+            return True
+    return False
+
+
 def _text_item_position_signature(item: dict[str, Any]) -> str:
     text = re.sub(r"\s+", "", str(item.get("text") or ""))
     page_no = int(item.get("page_no") or 0)
@@ -818,6 +944,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
         or (
             str(item.get("item_type") or item.get("type") or "") == "text"
             and not _is_ocr_derived_material_text(item)
+            and str(item.get("material_role") or "") != "table_text"
         )
         for item in ordered_items
     )
@@ -825,11 +952,16 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
         lines.extend([f"# {material_title}", ""])
 
     seen_texts: set[str] = set()
+    seen_table_cell_texts: set[str] = set()
     text_buffer: list[dict[str, Any]] = []
     for item in ordered_items:
         item_type = str(item.get("item_type") or item.get("type") or "")
         if item_type == "text":
             if _is_ocr_derived_material_text(item):
+                continue
+            if str(item.get("material_role") or "") == "table_text":
+                continue
+            if _text_repeated_from_table_cells(str(item.get("text") or ""), seen_table_cell_texts):
                 continue
             text_buffer.append(item)
         elif item_type == "image":
@@ -850,6 +982,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 table_markdown = _render_table_markdown(rows) if _should_inline_table_markdown(rows) else ""
                 if table_markdown:
                     lines.extend([table_markdown, ""])
+                    seen_table_cell_texts.update(_table_cell_text_signatures(rows))
                 else:
                     lines.extend([f"[表格：{title}]({payload_ref})", ""])
         elif item_type == "submaterial" and item.get("payload_ref"):
