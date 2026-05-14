@@ -2025,6 +2025,54 @@ def test_package_module_artifacts_keeps_long_folder_titles_readable_without_hash
     assert child_dirs[0].startswith("（1.1）、 01-2025年35kV及以上输变电一次设备和装置材料供应")
 
 
+def test_package_module_artifacts_deduplicates_stream_text_and_skips_page_numbers(tmp_path: Path) -> None:
+    candidate = _candidate(
+        "商务文件 / 商务评审索引表",
+        2,
+        2,
+        "商务评审索引表",
+    )
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=2, text="商务评审索引表", bbox=[255, 73, 346, 86], block_no=1),
+        PdfTextBlock(block_id="page-no", page_no=2, text="2", bbox=[295, 789, 304, 798], block_no=2),
+    ]
+    stream_items = [
+        PageMaterialItem(
+            item_id="title",
+            item_type="text",
+            source_type="pdf_text",
+            page_no=2,
+            top_y=73,
+            bbox=[255, 73, 346, 86],
+            text="商务评审索引表",
+            payload={"block_id": "title", "block_no": 1},
+        ),
+        PageMaterialItem(
+            item_id="page-no",
+            item_type="text",
+            source_type="pdf_text",
+            page_no=2,
+            top_y=789,
+            bbox=[295, 789, 304, 798],
+            text="2",
+            payload={"block_id": "page-no", "block_no": 2},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=[candidate],
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=stream_items,
+    )
+
+    ordered = json.loads((tmp_path / "modules" / "商务评审索引表" / "ordered_material.json").read_text(encoding="utf-8"))
+    texts = [item.get("text") for item in ordered["items"] if item.get("type") == "text"]
+    assert texts == ["商务评审索引表"]
+
+
 def test_package_module_artifacts_deduplicates_pdf_and_pp_structure_text_in_markdown(tmp_path: Path) -> None:
     candidates = [
         _candidate(

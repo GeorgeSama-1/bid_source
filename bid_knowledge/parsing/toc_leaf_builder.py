@@ -40,6 +40,20 @@ def _blocks_by_page(blocks: list[PdfTextBlock] | None) -> dict[int, list[PdfText
     return grouped
 
 
+def _is_toc_page(blocks: list[PdfTextBlock]) -> bool:
+    compact_texts = [_compact(block.text) for block in blocks]
+    has_toc_title = any(text in {"目录", "目錄"} for text in compact_texts)
+    has_dotted_entries = sum(1 for text in compact_texts if "..." in text or "。。" in text or "·" * 3 in text)
+    return has_toc_title and has_dotted_entries >= 1
+
+
+def _first_toc_page_between(blocks_by_page: dict[int, list[PdfTextBlock]], start_page: int, end_page: int) -> int | None:
+    for page_no in range(int(start_page), int(end_page) + 1):
+        if _is_toc_page(blocks_by_page.get(page_no, [])):
+            return page_no
+    return None
+
+
 def _find_toc_title_block(title: str, page_no: int, blocks_by_page: dict[int, list[PdfTextBlock]]) -> PdfTextBlock | None:
     target = _compact(title)
     if not target:
@@ -85,6 +99,9 @@ def build_toc_leaf_candidates(
         next_page = int(toc[index + 1].get("page") or page_count + 1) if index + 1 < len(toc) else page_count + 1
         page_start = max(1, int(item.get("page") or 1))
         page_end = max(page_start, min(page_count, next_page - 1))
+        later_toc_page = _first_toc_page_between(blocks_by_page, page_start + 1, page_end)
+        if later_toc_page is not None:
+            page_end = max(page_start, later_toc_page - 1)
         section_parts = [*root_parts, *stack]
         parent_title = stack[-2] if len(stack) >= 2 else ""
         section_path = " / ".join(section_parts)

@@ -72,3 +72,23 @@ def test_build_toc_leaf_candidates_records_same_page_y_boundaries() -> None:
     assert candidates[0].material_evidence["end_y"] == 300.0
     assert candidates[1].material_evidence["start_block_id"] == "h312"
     assert candidates[1].material_evidence["end_block_id"] == "h313"
+
+
+def test_build_toc_leaf_candidates_stops_section_before_later_toc_pages() -> None:
+    candidates = build_toc_leaf_candidates(
+        toc=[
+            {"level": 1, "title": "商务评审索引表", "page": 2},
+            {"level": 1, "title": "商务偏差表", "page": 10},
+        ],
+        page_count=20,
+        path_root="商务文件",
+        blocks=[
+            PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 70, 200, 90], block_no=1),
+            PdfTextBlock(block_id="toc-title", page_no=8, text="目  录", bbox=[0, 70, 200, 90], block_no=2),
+            PdfTextBlock(block_id="toc-line", page_no=8, text="商务评审索引表.................................................................... 2", bbox=[0, 95, 500, 110], block_no=3),
+        ],
+    )
+
+    assert candidates[0].section_path == "商务文件 / 商务评审索引表"
+    assert candidates[0].source_page == 2
+    assert candidates[0].source_page_end == 7

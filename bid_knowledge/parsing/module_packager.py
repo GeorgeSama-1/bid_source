@@ -166,6 +166,15 @@ def _looks_like_page_margin_text(text: str, bbox: list[float] | None) -> bool:
     return top <= 70 or bottom >= 760
 
 
+def _is_page_number_margin_text(text: str, bbox: list[float] | None) -> bool:
+    signature = _text_signature(text)
+    if not re.fullmatch(r"\d+", signature or ""):
+        return False
+    top = float(bbox[1]) if bbox and len(bbox) >= 2 else 0.0
+    bottom = float(bbox[3]) if bbox and len(bbox) >= 4 else top
+    return top <= 80 or bottom >= 760
+
+
 def _decorative_text_signatures(blocks: list[PdfTextBlock]) -> set[str]:
     pages_by_signature: dict[str, set[int]] = defaultdict(set)
     for block in blocks:
@@ -178,7 +187,13 @@ def _decorative_text_signatures(blocks: list[PdfTextBlock]) -> set[str]:
 
 def _is_decorative_text_block(block: PdfTextBlock, signatures: set[str]) -> bool:
     signature = _text_signature(block.text)
-    return bool(signature and signature in signatures and _looks_like_page_margin_text(block.text, block.bbox))
+    return bool(
+        signature
+        and (
+            (signature in signatures and _looks_like_page_margin_text(block.text, block.bbox))
+            or _is_page_number_margin_text(block.text, block.bbox)
+        )
+    )
 
 
 def _is_decorative_page_material_text(item: dict[str, Any], signatures: set[str]) -> bool:
@@ -191,7 +206,13 @@ def _is_decorative_page_material_text(item: dict[str, Any], signatures: set[str]
     text = str(item.get("text") or "")
     bbox = item.get("bbox") or []
     signature = _text_signature(text)
-    return bool(signature and signature in signatures and _looks_like_page_margin_text(text, bbox))
+    return bool(
+        signature
+        and (
+            (signature in signatures and _looks_like_page_margin_text(text, bbox))
+            or _is_page_number_margin_text(text, bbox)
+        )
+    )
 
 
 def _is_bid_package_context_title(title: str) -> bool:
@@ -386,6 +407,8 @@ def _ordered_material_items(
     page_material_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
+    seen_text_block_ids: set[str] = set()
+    seen_text_signatures: set[tuple[int, str, tuple[float, ...]]] = set()
     decorative_text = _decorative_text_signatures(text_blocks)
     table_regions = _table_regions_by_page(table_items)
     heading_candidates = build_heading_candidates(
@@ -403,6 +426,8 @@ def _ordered_material_items(
             continue
         if _block_inside_any_table(block, table_regions):
             continue
+        seen_text_block_ids.add(block.block_id)
+        seen_text_signatures.add(_ordered_text_signature(block.text, block.bbox, block.page_no))
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -481,6 +506,8 @@ def _ordered_material_items(
             continue
         if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
+        if item_type == "text" and _page_material_text_already_ordered(stream_item, seen_text_block_ids, seen_text_signatures):
+            continue
         bbox = stream_item.get("bbox") or []
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
         page_no = int(stream_item.get("page_no") or 0)
@@ -522,6 +549,28 @@ def _page_material_text_inside_any_table(stream_item: dict[str, Any], table_regi
     bbox = stream_item.get("bbox") or []
     page_no = int(stream_item.get("page_no") or 0)
     return _bbox_inside_any_table_region(page_no, bbox, table_regions)
+
+
+def _ordered_text_signature(text: str, bbox: Any, page_no: int) -> tuple[int, str, tuple[float, ...]]:
+    bbox_values = tuple(round(float(value), 2) for value in bbox[:4]) if isinstance(bbox, list) and len(bbox) >= 4 else ()
+    return (int(page_no), _text_signature(text), bbox_values)
+
+
+def _page_material_text_already_ordered(
+    stream_item: dict[str, Any],
+    seen_block_ids: set[str],
+    seen_signatures: set[tuple[int, str, tuple[float, ...]]],
+) -> bool:
+    payload = stream_item.get("payload") if isinstance(stream_item.get("payload"), dict) else {}
+    block_id = str(payload.get("block_id") or stream_item.get("block_id") or stream_item.get("item_id") or "")
+    if block_id and block_id in seen_block_ids:
+        return True
+    signature = _ordered_text_signature(
+        str(stream_item.get("text") or ""),
+        stream_item.get("bbox") or [],
+        int(stream_item.get("page_no") or 0),
+    )
+    return signature in seen_signatures
 
 
 def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
