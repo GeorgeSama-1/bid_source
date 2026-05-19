@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from bid_knowledge.service import app as service_app
 from bid_knowledge.service.result_browser import ResultBrowser, ResultNotFoundError
 
 
@@ -93,3 +95,84 @@ def test_reads_item_detail_and_blocks_path_escape(tmp_path: Path) -> None:
 
     with pytest.raises(ResultNotFoundError):
         browser.get_material_meta("history_run", "../outside")
+
+
+def test_agent_material_context_endpoint_returns_markdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outputs = make_sample_outputs(tmp_path)
+    material = outputs / "history_run" / "modules" / "技术文件" / "技术偏差表"
+    material.mkdir(parents=True)
+    (material / "material.md").write_text("# 技术偏差表\n\n| 序号 | 偏差事项 |\n| --- | --- |\n", encoding="utf-8")
+    write_json(
+        material / "material_meta.json",
+        {
+            "material_title": "技术偏差表",
+            "section_path": "技术文件 / 技术偏差表",
+            "material_path": "技术文件 / 技术偏差表",
+        },
+    )
+    write_json(
+        material / "ordered_material.json",
+        {
+            "material_title": "技术偏差表",
+            "section_path": "技术文件 / 技术偏差表",
+            "items": [{"type": "table", "item_type": "table", "table_title": "技术偏差表_表1", "page_no": 2}],
+        },
+    )
+    monkeypatch.setattr(service_app, "context_service", service_app.AgentMaterialContextService(outputs))
+
+    response = TestClient(service_app.app).post(
+        "/api/runs/history_run/materials/context",
+        json={"section_path": "技术文件 / 技术偏差表"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "matched"
+    assert payload["match_type"] == "exact_path"
+    assert "| 序号 | 偏差事项 |" in payload["content_markdown"]
+    assert payload["source_pages"] == [2]
+
+
+def test_project_material_context_endpoint_routes_multiple_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outputs = make_sample_outputs(tmp_path)
+    config_path = tmp_path / "material_projects.json"
+    write_json(
+        config_path,
+        {
+            "gansu_2026": {
+                "runs": {
+                    "商务文件": "business_run",
+                    "技术文件": "tech_run",
+                }
+            }
+        },
+    )
+    business = outputs / "business_run" / "modules" / "商务文件" / "商务偏差表"
+    business.mkdir(parents=True)
+    (business / "material.md").write_text("# 商务偏差表\n", encoding="utf-8")
+    write_json(business / "material_meta.json", {"material_title": "商务偏差表", "section_path": "商务文件 / 商务偏差表"})
+    write_json(business / "ordered_material.json", {"items": [{"type": "text", "item_type": "text", "page_no": 1}]})
+
+    tech = outputs / "tech_run" / "modules" / "技术文件" / "技术偏差表"
+    tech.mkdir(parents=True)
+    (tech / "material.md").write_text("# 技术偏差表\n\n技术内容", encoding="utf-8")
+    write_json(tech / "material_meta.json", {"material_title": "技术偏差表", "section_path": "技术文件 / 技术偏差表"})
+    write_json(tech / "ordered_material.json", {"items": [{"type": "table", "item_type": "table", "page_no": 8}]})
+    monkeypatch.setattr(
+        service_app,
+        "project_context_service",
+        service_app.ProjectMaterialContextService(outputs, config_path),
+    )
+
+    response = TestClient(service_app.app).post(
+        "/api/projects/gansu_2026/materials/context",
+        json={"section_path": "技术文件 / 技术偏差表"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "matched"
+    assert payload["project_id"] == "gansu_2026"
+    assert payload["file_type"] == "技术文件"
+    assert payload["run_name"] == "tech_run"
+    assert "技术内容" in payload["content_markdown"]
