@@ -215,6 +215,90 @@ def _is_decorative_page_material_text(item: dict[str, Any], signatures: set[str]
     )
 
 
+def _image_region_payload(item: dict[str, Any]) -> dict[str, Any]:
+    payload = item.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _image_region_bbox(item: dict[str, Any]) -> list[Any]:
+    bbox = item.get("bbox") or item.get("rect") or []
+    return bbox if isinstance(bbox, list) else []
+
+
+def _image_region_size(item: dict[str, Any]) -> tuple[float, float]:
+    bbox = _image_region_bbox(item)
+    if len(bbox) < 4:
+        return 0.0, 0.0
+    try:
+        return abs(float(bbox[2]) - float(bbox[0])), abs(float(bbox[3]) - float(bbox[1]))
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def _image_region_page_size(item: dict[str, Any]) -> tuple[float | None, float | None]:
+    payload = _image_region_payload(item)
+    try:
+        page_width = float(payload.get("page_width")) if payload.get("page_width") else None
+    except (TypeError, ValueError):
+        page_width = None
+    try:
+        page_height = float(payload.get("page_height")) if payload.get("page_height") else None
+    except (TypeError, ValueError):
+        page_height = None
+    return page_width, page_height
+
+
+def _image_region_text_signature(item: dict[str, Any]) -> str:
+    payload = _image_region_payload(item)
+    texts: list[str] = []
+    for key in ("text", "image_title", "nearest_heading"):
+        value = item.get(key)
+        if value:
+            texts.append(str(value))
+    ocr_texts = payload.get("ocr_texts")
+    if isinstance(ocr_texts, list):
+        texts.extend(str(text) for text in ocr_texts if text)
+    block_content = payload.get("block_content")
+    if block_content:
+        texts.append(str(block_content))
+    return _text_signature("".join(texts))
+
+
+def _looks_like_section_title_fragment(signature: str) -> bool:
+    if not signature:
+        return False
+    return bool(
+        re.fullmatch(r"[（(]?\d+(?:\.\d+)*[）)]?[、.．]?", signature)
+        or re.match(r"^[（(]?\d+(?:\.\d+)+[）)]?[、.．]?", signature)
+    )
+
+
+def _is_title_like_page_material_image(item: dict[str, Any]) -> bool:
+    item_type = str(item.get("item_type") or item.get("type") or "")
+    if item_type != "image":
+        return False
+    payload = _image_region_payload(item)
+    source_type = str(item.get("source_type") or "")
+    if source_type != "pp_structure_image_region" and str(payload.get("layout_label") or "") != "image":
+        return False
+
+    width, height = _image_region_size(item)
+    if width <= 0 or height <= 0:
+        return False
+    page_width, page_height = _image_region_page_size(item)
+    height_ratio = height / page_height if page_height else None
+    width_ratio = width / page_width if page_width else None
+    is_thin = height <= 40 or (height_ratio is not None and height_ratio <= 0.035)
+    is_small_width = width <= 320 or (width_ratio is not None and width_ratio <= 0.35)
+    if not (is_thin and is_small_width):
+        return False
+
+    signature = _image_region_text_signature(item)
+    if _looks_like_section_title_fragment(signature):
+        return True
+    return not signature and height <= 24 and width <= 180
+
+
 def _is_bid_package_context_title(title: str) -> bool:
     signature = _text_signature(title)
     if not signature:
@@ -1070,6 +1154,11 @@ def _write_material_package(
             for item in page_material_items or []
             if str(item.get("item_type") or item.get("type") or "") != "image"
         ]
+    page_material_items = [
+        item
+        for item in page_material_items or []
+        if not _is_title_like_page_material_image(item)
+    ]
     submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
     if submaterial_ranges:

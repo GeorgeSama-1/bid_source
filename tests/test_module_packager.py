@@ -533,6 +533,92 @@ def test_package_module_artifacts_assigns_stream_image_to_nearest_body_heading(t
     assert "![座位图片_图1](image_items/座位图片_图1.png)" in material_md
 
 
+def test_package_module_artifacts_skips_title_like_pp_image_regions(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "source.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    class FakePixmap:
+        def save(self, path: str | Path) -> None:
+            Path(path).write_bytes(b"fake-cropped-image")
+
+    class FakePage:
+        rect = SimpleNamespace(width=595.0, height=842.0)
+
+        def get_pixmap(self, **_kwargs):
+            return FakePixmap()
+
+    class FakeDoc:
+        page_count = 1
+
+        def load_page(self, index: int) -> FakePage:
+            assert index == 0
+            return FakePage()
+
+        def insert_pdf(self, *_args, **_kwargs) -> None:
+            return None
+
+        def save(self, path: str | Path) -> None:
+            Path(path).write_bytes(b"fake-pdf")
+
+        def close(self) -> None:
+            return None
+
+    class FakeRect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0 = x0
+            self.y0 = y0
+            self.x1 = x1
+            self.y1 = y1
+
+    monkeypatch.setitem(sys.modules, "fitz", SimpleNamespace(open=lambda *_args, **_kwargs: FakeDoc(), Rect=FakeRect, Matrix=lambda *_args: None))
+
+    candidates = [
+        _candidate(
+            "技术文件 / 3.6.1.1、技术偏差表",
+            1,
+            1,
+            "3.6.1.1、技术偏差表",
+        )
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-title",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=72,
+            bbox=[72, 72, 152, 88],
+            text="",
+            payload={
+                "layout_label": "image",
+                "ocr_texts": ["3.6.1.1、"],
+                "ocr_scores": [0.99],
+                "page_width": 595,
+                "page_height": 842,
+            },
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        pdf_path=pdf_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "3.6.1.1、技术偏差表"
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    assert all(item.get("item_id") != "pp-image-title" for item in ordered["items"])
+    assert "![" not in material_md
+    exported_pngs = list((material_dir / "image_items").glob("*.png")) if (material_dir / "image_items").exists() else []
+    assert exported_pngs == []
+
+
 def test_package_module_artifacts_assigns_attachment_stream_image_to_fu_heading(tmp_path: Path) -> None:
     candidates = [
         _candidate(

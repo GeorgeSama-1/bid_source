@@ -214,6 +214,13 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
         if label == "image":
             image_index += 1
             bbox = [float(value) for value in (box.get("coordinate") or [])]
+            region_texts, region_scores = _ocr_texts_in_region(
+                texts=ocr_texts,
+                scores=ocr_scores,
+                boxes=ocr_boxes,
+                region=bbox,
+                page_height=page_height_int,
+            )
             items.append(
                 PageMaterialItem(
                     item_id=f"pp-image-{page_no}-{image_index}",
@@ -226,6 +233,8 @@ def build_pp_structure_page_material_items(pp_result: dict[str, Any], *, page_no
                     payload={
                         "layout_label": "image",
                         "score": box.get("score"),
+                        "ocr_texts": region_texts,
+                        "ocr_scores": region_scores,
                         "page_width": page_width,
                         "page_height": page_height,
                     },

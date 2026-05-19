@@ -153,6 +153,39 @@ def test_build_pp_structure_page_material_items_falls_back_to_spatial_ocr_texts(
     assert all("商务投标文件" not in item.text for item in items)
 
 
+def test_build_pp_structure_page_material_items_attaches_spatial_ocr_to_image_regions() -> None:
+    pp_result = {
+        "height": 1684,
+        "width": 1191,
+        "parsing_res_list": [],
+        "layout_det_res": {
+            "boxes": [
+                {
+                    "label": "image",
+                    "coordinate": [140, 150, 260, 178],
+                    "score": 0.72,
+                }
+            ]
+        },
+        "overall_ocr_res": {
+            "rec_texts": ["3.6.1.1、", "表格正文"],
+            "rec_scores": [0.98, 0.93],
+            "rec_boxes": [
+                [145, 154, 245, 174],
+                [140, 230, 520, 260],
+            ],
+            "text_type": "general",
+        },
+    }
+
+    items = build_pp_structure_page_material_items(pp_result, page_no=1)
+
+    assert len(items) == 1
+    assert items[0].item_type == "image"
+    assert items[0].payload["ocr_texts"] == ["3.6.1.1、"]
+    assert items[0].payload["ocr_scores"] == [0.98]
+
+
 def test_build_pp_structure_page_material_items_skips_unspatial_fallback_text() -> None:
     pp_result = {
         "parsing_res_list": [],
