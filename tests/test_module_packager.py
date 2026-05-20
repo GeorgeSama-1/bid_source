@@ -894,6 +894,55 @@ def test_package_module_artifacts_creates_review_index_subfolders(tmp_path: Path
     assert "[3.8.1.2、企业整体经营状况优良](3.8.1.2、企业整体经营状况优良/material.md)" in parent_markdown
 
 
+def test_review_index_subfolder_images_do_not_inherit_parent_heading_title(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / “商务评分标准”涉及的支撑材料 / 三、投标响应 / 报价质量",
+            818,
+            819,
+            "3.8.19、投标响应-报价质量",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="idx-title", page_no=2, text="商务评审索引表", bbox=[0, 0, 10, 10], block_no=1),
+        PdfTextBlock(block_id="parent-818", page_no=818, text="3.8.19、投标响应-报价质量", bbox=[0, 80, 260, 100], block_no=2),
+        PdfTextBlock(block_id="parent-819", page_no=819, text="3.8.19、投标响应-报价质量", bbox=[0, 80, 260, 100], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="index-table",
+            page_no=2,
+            rows=[
+                ["项目", "评审要素", "评审细则", "", ""],
+                ["三、投标响应", "报价质量", "", "详见第818页：3.8.19.1、报价质量说明", ""],
+                ["", "", "", "第819页：3.8.19.2、报价明细截图", ""],
+            ],
+        )
+    ]
+    images = [
+        {"image_id": "img-1", "page_no": 818, "xref": 401, "width": 800, "height": 600, "rect": [10, 160, 210, 300], "ext": "png"},
+        {"image_id": "img-2", "page_no": 819, "xref": 402, "width": 800, "height": 600, "rect": [10, 160, 210, 300], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    base = tmp_path / "modules" / "补充文件" / "“商务评分标准”涉及的支撑材料" / "三、投标响应" / "报价质量"
+    sub_1 = base / "3.8.19.1、报价质量说明"
+    sub_2 = base / "3.8.19.2、报价明细截图"
+
+    assert (sub_1 / "image_items" / "报价质量说明_图1.json").exists()
+    assert (sub_2 / "image_items" / "报价明细截图_图1.json").exists()
+    assert not (sub_1 / "image_items" / "投标响应-报价质量_图1.json").exists()
+    assert not (sub_2 / "image_items" / "投标响应-报价质量_图2.json").exists()
+
+
 def test_package_module_artifacts_expands_pages_using_review_index_ranges(tmp_path: Path) -> None:
     candidates = [
         _candidate(

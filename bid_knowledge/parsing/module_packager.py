@@ -326,6 +326,29 @@ def _fallback_context_title(
     return default_title
 
 
+def _title_section_number(title: str) -> tuple[int, ...]:
+    match = re.match(r"^\s*[（(]?(\d+(?:\.\d+)*)", str(title or "").strip())
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _prefer_subfolder_title_for_ancestor_context(
+    context_title: str,
+    subfolder: dict[str, Any] | None,
+    *,
+    raw_context_title: str = "",
+) -> str:
+    if not subfolder:
+        return context_title
+    folder_title = str(subfolder.get("folder_title") or "")
+    context_number = _title_section_number(context_title) or _title_section_number(raw_context_title)
+    folder_number = _title_section_number(folder_title)
+    if context_number and folder_number and len(context_number) < len(folder_number) and folder_number[: len(context_number)] == context_number:
+        return _text_item_base_title(folder_title)
+    return context_title
+
+
 def _attachment_match_key(text: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", sanitize_display_title(attachment_heading_title(text))).lower()
 
@@ -3035,6 +3058,7 @@ def package_module_artifacts(
             table_counts: dict[str, int] = {}
             for table in sorted(module_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)):
                 top_y = _table_assignment_top_y(table)
+                subfolder = _subfolder_for_position(section_subfolders, table.page_no, top_y)
                 nearest = find_nearest_heading(heading_candidates, table.page_no, top_y)
                 context_title = _fallback_context_title(
                     nearest=nearest,
@@ -3043,9 +3067,13 @@ def package_module_artifacts(
                     path_parts=path_parts,
                     default_title=f"第{table.page_no}页表格",
                 )
+                context_title = _prefer_subfolder_title_for_ancestor_context(
+                    context_title,
+                    subfolder,
+                    raw_context_title=str(nearest.get("raw_title") or "") if nearest else "",
+                )
                 table_counts[context_title] = table_counts.get(context_title, 0) + 1
                 table_title = _sanitize_item_title(context_title, f"表{table_counts[context_title]}")
-                subfolder = _subfolder_for_position(section_subfolders, table.page_no, top_y)
                 item_dir = table_items_dir
                 if subfolder:
                     item_dir = ensure_dir(section_dir / _safe_dirname(subfolder["folder_title"]) / "table_items")
@@ -3075,6 +3103,7 @@ def package_module_artifacts(
                 rect = image.get("rect") or [0, 0, 0, 0]
                 top_y = float(rect[1]) if len(rect) >= 2 else None
                 page_no = int(image.get("page_no") or 0)
+                subfolder = _subfolder_for_position(section_subfolders, page_no, top_y)
                 nearest = find_nearest_heading(heading_candidates, page_no, top_y)
                 context_title = _fallback_context_title(
                     nearest=nearest,
@@ -3083,9 +3112,13 @@ def package_module_artifacts(
                     path_parts=path_parts,
                     default_title=f"第{page_no}页图片",
                 )
+                context_title = _prefer_subfolder_title_for_ancestor_context(
+                    context_title,
+                    subfolder,
+                    raw_context_title=str(nearest.get("raw_title") or "") if nearest else "",
+                )
                 image_counts[context_title] = image_counts.get(context_title, 0) + 1
                 image_title = _sanitize_item_title(context_title, f"图{image_counts[context_title]}")
-                subfolder = _subfolder_for_position(section_subfolders, page_no, top_y)
                 item_dir = image_items_dir
                 if subfolder:
                     item_dir = ensure_dir(section_dir / _safe_dirname(subfolder["folder_title"]) / "image_items")
