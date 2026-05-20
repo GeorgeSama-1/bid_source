@@ -272,6 +272,7 @@ def _filter_regions_overlapping_images(
                 item
                 for item in masks
                 if int(item.get("page_no") or 0) == region.page_no
+                and not _image_mask_embedded_in_table_region(region.bbox, item["bbox"])
                 and (
                     _bbox_overlap_ratio(region.bbox, item["bbox"]) >= overlap_threshold
                     or _bbox_center_inside(region.bbox, item["bbox"])
@@ -287,6 +288,20 @@ def _filter_regions_overlapping_images(
             continue
         filtered.append(region)
     return filtered
+
+
+def _image_mask_embedded_in_table_region(region_bbox: list[float], image_bbox: list[float]) -> bool:
+    image_covered = _bbox_overlap_ratio(region_bbox, image_bbox)
+    table_covered = _bbox_overlap_area_ratio(region_bbox, image_bbox)
+    if image_covered < 0.9 or table_covered >= 0.85:
+        return False
+    rx0, ry0, rx1, ry1 = [float(value) for value in region_bbox[:4]]
+    ix0, iy0, ix1, iy1 = [float(value) for value in image_bbox[:4]]
+    table_width = max(rx1 - rx0, 1.0)
+    table_height = max(ry1 - ry0, 1.0)
+    horizontal_margin = max(0.0, ix0 - rx0) + max(0.0, rx1 - ix1)
+    vertical_margin = max(0.0, iy0 - ry0) + max(0.0, ry1 - iy1)
+    return horizontal_margin >= table_width * 0.08 or vertical_margin >= table_height * 0.08
 
 
 def _merge_candidate_regions(

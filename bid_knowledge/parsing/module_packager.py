@@ -550,6 +550,8 @@ def _ordered_material_items(
             ).model_dump(exclude_none=True)
         )
     for image in image_items:
+        if _bbox_inside_any_table_region(int(image.get("page_no") or 0), image.get("rect") or [], table_regions):
+            continue
         ordered.append(
             MaterialItemRef(
                 type="image",
@@ -595,6 +597,8 @@ def _ordered_material_items(
         if item_type == "text" and _page_material_text_already_ordered(stream_item, seen_text_block_ids, seen_text_signatures):
             continue
         bbox = stream_item.get("bbox") or []
+        if item_type == "image" and _bbox_inside_any_table_region(int(stream_item.get("page_no") or 0), bbox, table_regions):
+            continue
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
         page_no = int(stream_item.get("page_no") or 0)
         nearest = find_nearest_heading(heading_candidates, page_no, top_y)

@@ -2997,6 +2997,65 @@ def test_ordered_material_skips_pp_structure_table_region_when_table_item_exists
     assert sum(1 for item in ordered["items"] if item["item_type"] == "table") == 1
 
 
+def test_package_module_artifacts_skips_stream_images_inside_table_regions(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 3.8.11、科研经费占比",
+            1,
+            1,
+            "3.8.11、科研经费占比",
+        )
+    ]
+    image_path = tmp_path / "table-cell-image.png"
+    image_path.write_bytes(b"fake-image")
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="3.8.11、科研经费占比", bbox=[20, 40, 220, 60], block_no=1),
+        PdfTextBlock(block_id="cell-1", page_no=1, text="项目", bbox=[40, 120, 90, 140], block_no=2),
+        PdfTextBlock(block_id="cell-2", page_no=1, text="2024 年", bbox=[160, 120, 230, 140], block_no=3),
+        PdfTextBlock(block_id="cell-3", page_no=1, text="研发投入金额（元）", bbox=[40, 160, 150, 180], block_no=4),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="table-with-image-cell",
+            page_no=1,
+            rows=[["项目", "2024 年"], ["研发投入金额（元）", "[图片]"]],
+            bbox=[30, 110, 520, 320],
+            source_type="pp_structure_table",
+        )
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-in-table",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=210,
+            bbox=[300, 210, 490, 300],
+            text="",
+            file_path=str(image_path),
+            payload={"layout_label": "image"},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "3.8.11、科研经费占比"
+    material = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert "| 项目 | 2024 年 |" in material
+    assert "[图片]" in material
+    assert "![" not in material
+    assert all(item.get("item_id") != "pp-image-in-table" for item in ordered["items"])
+
+
 def test_fu_lines_do_not_create_submaterials_or_drop_pp_structure_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(

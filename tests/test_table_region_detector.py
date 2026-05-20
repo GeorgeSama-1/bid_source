@@ -304,6 +304,20 @@ def test_filter_regions_overlapping_pp_structure_image_boxes() -> None:
     assert regions[0].evidence["filtered_image_source"] == "pp_structure"
 
 
+def test_filter_regions_overlapping_images_keeps_tables_with_embedded_images() -> None:
+    regions = [
+        CandidateTableRegion(region_id="table-with-image-cell", page_no=1, bbox=[20, 100, 500, 360], detectors=["pymupdf_lines"], confidence=0.8),
+    ]
+    images = [
+        {"image_id": "img-in-cell", "page_no": 1, "rect": [260, 220, 470, 330]},
+    ]
+
+    filtered = _filter_regions_overlapping_images(regions, images)
+
+    assert [region.region_id for region in filtered] == ["table-with-image-cell"]
+    assert "filtered_reason" not in regions[0].evidence
+
+
 def test_filter_regions_overlapping_images_drops_table_when_center_falls_inside_image() -> None:
     regions = [
         CandidateTableRegion(region_id="image-backed-table", page_no=1, bbox=[0, 0, 100, 100], detectors=["pymupdf_lines"], confidence=0.8),
