@@ -30,6 +30,9 @@ TABLE_TO_JSON_PROMPT = """你是表格结构识别引擎。请识别图片中的
 8. 不要只提取文字；不要把同一列里的文字拆成多行普通文本。
 9. 不要因为表格线不明显就退化成纯文字识别。
 10. 表头、多级表头、单位、备注都要尽量保留在对应单元格中。
+11. 如果某个单元格中包含图片、截图、证照、印章或照片，请只把该单元格 text 写为 "[图片]"。
+12. 不要识别、转写、总结图片内部文字；图片只用于判断单元格位置和表格结构。
+13. 如果图片与表格线、表头或其他单元格同处一个表格区域，请仍然按一个完整表格恢复，不要把图片周围的表格文字拆成普通文本。
 
 返回格式：
 {
@@ -50,6 +53,8 @@ TABLE_TO_JSON_RETRY_PROMPT = TABLE_TO_JSON_PROMPT + """
 - 每个 cells 元素必须包含 row、col、text、rowspan、colspan。
 - row_count 和 col_count 必须大于 0。
 - 如果某个单元格为空，也要保留它在表格中的位置。
+- 如果单元格中是图片，text 写为 "[图片]"，不要读取图片内部文字。
+- 图片只用于判断单元格位置和表格结构，不要识别、转写、总结图片内部文字。
 - 只返回一个 JSON object，不能返回 Markdown 表格、解释、列表或普通文本。"""
 
 
@@ -125,16 +130,21 @@ def _parse_table_model_text(text: str) -> dict[str, Any]:
     for cell in cells:
         if not isinstance(cell, dict):
             continue
-        normalized_cells.append(
-            {
-                "row": int(cell.get("row") or 0),
-                "col": int(cell.get("col") or 0),
-                "text": str(cell.get("text") or ""),
-                "rowspan": max(1, int(cell.get("rowspan") or 1)),
-                "colspan": max(1, int(cell.get("colspan") or 1)),
-                "bbox": cell.get("bbox"),
-            }
-        )
+        text = str(cell.get("text") or "")
+        image_ref = str(cell.get("image_ref") or "").strip()
+        if image_ref and not text:
+            text = "[图片]"
+        normalized_cell = {
+            "row": int(cell.get("row") or 0),
+            "col": int(cell.get("col") or 0),
+            "text": text,
+            "rowspan": max(1, int(cell.get("rowspan") or 1)),
+            "colspan": max(1, int(cell.get("colspan") or 1)),
+            "bbox": cell.get("bbox"),
+        }
+        if image_ref:
+            normalized_cell["image_ref"] = image_ref
+        normalized_cells.append(normalized_cell)
     if normalized_cells:
         row_count = max(
             0,

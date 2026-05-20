@@ -9,6 +9,7 @@ outputs/
 data/
 *.pdf
 *.xlsx
+docs/
 
 # Local model/cache directories
 models/

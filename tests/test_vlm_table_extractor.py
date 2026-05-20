@@ -3,6 +3,8 @@ from threading import Lock
 from types import SimpleNamespace
 
 from bid_knowledge.parsing.vlm_table_extractor import (
+    TABLE_TO_JSON_PROMPT,
+    TABLE_TO_JSON_RETRY_PROMPT,
     _call_vlm_table_model,
     _parse_table_model_text,
     enhance_tables_with_vlm,
@@ -81,6 +83,31 @@ def test_parse_table_model_text_expands_wrong_row_and_col_counts_from_cells() ->
     assert len(model["rows"]) == 3
     assert all(len(row) == 13 for row in model["rows"])
     assert model["rows"][2][12] == "—"
+
+
+def test_parse_table_model_text_preserves_image_cell_refs_without_ocr_text() -> None:
+    text = """{
+      "row_count": 1,
+      "col_count": 2,
+      "cells": [
+        {"row": 0, "col": 0, "text": "证明材料", "rowspan": 1, "colspan": 1},
+        {"row": 0, "col": 1, "text": "", "image_ref": "image_items/photo.png", "rowspan": 1, "colspan": 1}
+      ],
+      "merged_cells": []
+    }"""
+
+    model = _parse_table_model_text(text)
+
+    assert model["cells"][1]["text"] == "[图片]"
+    assert model["cells"][1]["image_ref"] == "image_items/photo.png"
+    assert model["rows"] == [["证明材料", "[图片]"]]
+
+
+def test_table_prompt_treats_embedded_images_as_placeholders_not_text_source() -> None:
+    for prompt in (TABLE_TO_JSON_PROMPT, TABLE_TO_JSON_RETRY_PROMPT):
+        assert "不要识别、转写、总结图片内部文字" in prompt
+        assert "text 写为 \"[图片]\"" in prompt
+        assert "图片只用于判断单元格位置和表格结构" in prompt
 
 
 def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_path: Path, monkeypatch) -> None:
