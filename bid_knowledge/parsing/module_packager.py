@@ -279,7 +279,10 @@ def _is_title_like_page_material_image(item: dict[str, Any]) -> bool:
         return False
     payload = _image_region_payload(item)
     source_type = str(item.get("source_type") or "")
-    if source_type != "pp_structure_image_region" and str(payload.get("layout_label") or "") != "image":
+    if (
+        source_type not in {"pp_structure_image_region", "pdf_embedded_image"}
+        and str(payload.get("layout_label") or "") != "image"
+    ):
         return False
 
     width, height = _image_region_size(item)

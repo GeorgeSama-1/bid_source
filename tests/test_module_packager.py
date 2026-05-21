@@ -840,6 +840,59 @@ def test_package_module_artifacts_filters_tiny_artifact_images(tmp_path: Path) -
     assert exported == ["符合投标文件投标人资格要求的证明文件_图1.json"]
 
 
+def test_package_module_artifacts_filters_title_fragment_pdf_embedded_page_image(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 3、 补充文件 / 3.8、 招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料 / 3.8.10、 研发团队规模 / 3.8.10.1、 拥有高级及以上职称人员和高级技师人员清单",
+            769,
+            769,
+            "3.8.10、 研发团队规模",
+        )
+    ]
+    page_material_items = [
+        {
+            "item_id": "image-title-fragment",
+            "item_type": "image",
+            "source_type": "pdf_embedded_image",
+            "page_no": 769,
+            "reading_order": 12376,
+            "top_y": 98.76000213623047,
+            "bbox": [72.36000061035156, 98.76000213623047, 125.10000610351562, 107.94000244140625],
+            "text": "",
+            "payload": {
+                "image_id": "image-title-fragment",
+                "page_no": 769,
+                "xref": 2839,
+                "width": 146,
+                "height": 25,
+                "ext": "png",
+                "rect": [72.36000061035156, 98.76000213623047, 125.10000610351562, 107.94000244140625],
+            },
+        }
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.8、 招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料"
+        / "3.8.10、 研发团队规模"
+        / "3.8.10.1、 拥有高级及以上职称人员和高级技师人员清单"
+    )
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    assert all(item.get("item_id") != "image-title-fragment" for item in ordered["items"])
+    assert not (material_dir / "image_items" / "拥有高级及以上职称人员和高级技师人员清单_图1.json").exists()
+
+
 def test_package_module_artifacts_creates_review_index_subfolders(tmp_path: Path) -> None:
     candidates = [
         _candidate(
