@@ -349,6 +349,66 @@ def _prefer_subfolder_title_for_ancestor_context(
     return context_title
 
 
+def _image_title_context_part(title: str) -> str:
+    return re.sub(r"_图\d+$", "", str(title or "").strip())
+
+
+def _is_ancestor_section_title(ancestor_title: str, child_title: str) -> bool:
+    ancestor_number = _title_section_number(ancestor_title)
+    child_number = _title_section_number(child_title)
+    return bool(
+        ancestor_number
+        and child_number
+        and len(ancestor_number) < len(child_number)
+        and child_number[: len(ancestor_number)] == ancestor_number
+    )
+
+
+def _image_uses_ancestor_context(image: dict[str, Any], material_title: str) -> bool:
+    image_title = _image_title_context_part(str(image.get("image_title") or "").strip())
+    if image_title:
+        return _is_ancestor_section_title(image_title, material_title)
+    for key in ("context_title", "parent_section_title", "container_title"):
+        value = str(image.get(key) or "").strip()
+        if value and _is_ancestor_section_title(value, material_title):
+            return True
+    return False
+
+
+def _retitle_images_for_material_context(material_dir: Path, image_items: list[dict[str, Any]], material_title: str) -> None:
+    if not image_items:
+        return
+    if not _title_section_number(material_title):
+        return
+    base_title = _text_item_base_title(material_title)
+    if not base_title:
+        return
+    item_dir = ensure_dir(material_dir / "image_items")
+    renamed_count = 0
+    for image in image_items:
+        if not _image_uses_ancestor_context(image, material_title):
+            continue
+        renamed_count += 1
+        new_title = _sanitize_item_title(base_title, f"图{renamed_count}")
+        old_file_path = Path(str(image.get("file_path") or "")) if image.get("file_path") else None
+        ext = (old_file_path.suffix.lstrip(".") if old_file_path and old_file_path.suffix else str(image.get("ext") or "png")).lower()
+        new_file_path = item_dir / _item_filename(new_title, ext)
+        if old_file_path and old_file_path != new_file_path and old_file_path.exists():
+            if not new_file_path.exists():
+                old_file_path.rename(new_file_path)
+            else:
+                old_file_path.unlink()
+        image["image_title"] = new_title
+        image["context_title"] = base_title
+        image["file_path"] = str(new_file_path)
+        old_json_path = Path(str(image.get("json_path") or "")) if image.get("json_path") else None
+        new_json_path = item_dir / _item_filename(new_title, "json")
+        image["json_path"] = str(new_json_path)
+        write_json(new_json_path, {key: value for key, value in image.items() if not str(key).startswith("_")})
+        if old_json_path and old_json_path != new_json_path and old_json_path.exists():
+            old_json_path.unlink()
+
+
 def _attachment_match_key(text: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", sanitize_display_title(attachment_heading_title(text))).lower()
 
@@ -1186,6 +1246,7 @@ def _write_material_package(
         for item in page_material_items or []
         if not _is_title_like_page_material_image(item)
     ]
+    _retitle_images_for_material_context(material_dir, image_items, subfolder["folder_title"])
     submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
     if submaterial_ranges:

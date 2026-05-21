@@ -943,6 +943,51 @@ def test_review_index_subfolder_images_do_not_inherit_parent_heading_title(tmp_p
     assert not (sub_2 / "image_items" / "投标响应-报价质量_图2.json").exists()
 
 
+def test_leaf_material_images_do_not_inherit_parent_container_title(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 3、 补充文件 / 3.8、 招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料 / 3.8.18、 实体清单应对举措 / 3.8.18.2、 税收优惠",
+            814,
+            815,
+            "3.8.18、 实体清单应对举措",
+        )
+    ]
+    images = [
+        {"image_id": "tax-1", "page_no": 814, "xref": 501, "width": 800, "height": 600, "rect": [72, 305, 523, 751], "ext": "png"},
+        {"image_id": "tax-2", "page_no": 815, "xref": 502, "width": 800, "height": 600, "rect": [72, 72, 523, 403], "ext": "jpeg"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=[],
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "3、 补充文件"
+        / "3.8、 招标文件第三章评标办法前附表之三“商务评分标准”涉及的支撑材料"
+        / "3.8.18、 实体清单应对举措"
+        / "3.8.18.2、 税收优惠"
+    )
+    image_dir = material_dir / "image_items"
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert (image_dir / "税收优惠_图1.json").exists()
+    assert (image_dir / "税收优惠_图1.png").exists()
+    assert (image_dir / "税收优惠_图2.json").exists()
+    assert (image_dir / "税收优惠_图2.jpeg").exists()
+    assert not (image_dir / "3.8.18、 实体清单应对举措_图1.json").exists()
+    assert [item["image_title"] for item in ordered["items"] if item["type"] == "image"] == [
+        "税收优惠_图1",
+        "税收优惠_图2",
+    ]
+
+
 def test_package_module_artifacts_expands_pages_using_review_index_ranges(tmp_path: Path) -> None:
     candidates = [
         _candidate(
