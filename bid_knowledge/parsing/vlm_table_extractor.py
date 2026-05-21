@@ -64,6 +64,8 @@ def _extract_response_text(payload: dict[str, Any]) -> str:
         return ""
     message = choices[0].get("message") or {}
     content = message.get("content")
+    if content is None:
+        content = message.get("reasoning_content")
     if isinstance(content, list):
         return "\n".join(str(item.get("text") or "") for item in content if isinstance(item, dict) and item.get("type") == "text")
     return str(content or "")
@@ -350,6 +352,8 @@ def _call_vlm_table_model(
             ],
             "temperature": 0,
             "max_tokens": max_tokens,
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         response = requests.post(endpoint, headers=headers, json=payload, timeout=request_timeout)
         response.raise_for_status()

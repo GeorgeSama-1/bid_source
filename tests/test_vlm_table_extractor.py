@@ -6,6 +6,7 @@ from bid_knowledge.parsing.vlm_table_extractor import (
     TABLE_TO_JSON_PROMPT,
     TABLE_TO_JSON_RETRY_PROMPT,
     _call_vlm_table_model,
+    _extract_response_text,
     _parse_table_model_text,
     enhance_tables_with_vlm,
 )
@@ -110,6 +111,23 @@ def test_table_prompt_treats_embedded_images_as_placeholders_not_text_source() -
         assert "图片只用于判断单元格位置和表格结构" in prompt
 
 
+def test_extract_response_text_falls_back_to_reasoning_content() -> None:
+    text = _extract_response_text(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "reasoning_content": '{"row_count":1,"col_count":1,"cells":[]}',
+                    }
+                }
+            ]
+        }
+    )
+
+    assert text == '{"row_count":1,"col_count":1,"cells":[]}'
+
+
 def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")
@@ -166,9 +184,11 @@ def test_call_vlm_table_model_omits_authorization_when_api_key_is_missing(tmp_pa
     image_path = tmp_path / "table.png"
     image_path.write_bytes(b"fake-png")
     captured_headers = {}
+    captured_payload = {}
 
     def fake_post(_endpoint, headers=None, json=None, timeout=None):
         captured_headers.update(headers or {})
+        captured_payload.update(json or {})
         return SimpleNamespace(
             raise_for_status=lambda: None,
             json=lambda: {
@@ -192,6 +212,8 @@ def test_call_vlm_table_model_omits_authorization_when_api_key_is_missing(tmp_pa
 
     assert table_model["rows"] == [["无"]]
     assert "Authorization" not in captured_headers
+    assert captured_payload["enable_thinking"] is False
+    assert captured_payload["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_call_vlm_table_model_adds_bearer_authorization_when_api_key_is_present(tmp_path: Path, monkeypatch) -> None:
