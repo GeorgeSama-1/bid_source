@@ -492,8 +492,8 @@ def pdf_toc_pipeline_command(
         write_json(parsed_dir / "tables.json", tables)
 
     if vlm_table_enabled:
-        _pipeline_echo(4, total_steps, "Enhancing tables with PaddleOCR-VL")
-        with _make_progress_callback(show_progress, "Enhancing tables with PaddleOCR-VL") as progress_callback:
+        _pipeline_echo(4, total_steps, "Enhancing tables with VLM")
+        with _make_progress_callback(show_progress, "Enhancing tables with VLM") as progress_callback:
             tables = enhance_tables_with_vlm(
                 pdf_path=pdf,
                 tables=tables,

@@ -173,7 +173,7 @@ def test_enhance_tables_with_vlm_updates_table_model_and_keeps_raw_response(tmp_
         max_tokens=4096,
     )
 
-    assert enhanced[0].table_model_source == "paddleocr_vl"
+    assert enhanced[0].table_model_source == "vlm"
     assert enhanced[0].table_model["cells"][0]["text"] == "272608"
     assert enhanced[0].vlm_table_model["row_count"] == 1
     assert enhanced[0].vlm_raw_response["choices"][0]["message"]["content"]
@@ -414,7 +414,7 @@ def test_enhance_tables_with_vlm_uses_non_empty_vlm_even_when_pdfplumber_looks_r
         calls.append("call")
         return (
             {
-                "source": "paddleocr_vl",
+                "source": "vlm",
                 "row_count": 3,
                 "col_count": 1,
                 "rows": [["运行维护"], ["1(100)指标"], ["项目名称"]],
@@ -440,10 +440,10 @@ def test_enhance_tables_with_vlm_uses_non_empty_vlm_even_when_pdfplumber_looks_r
     )
 
     assert enhanced[0].table_id == "pdfplumber-table"
-    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["source"] == "vlm"
     assert enhanced[0].table_model["rows"] == [["运行维护"], ["1(100)指标"], ["项目名称"]]
-    assert enhanced[0].table_model_source == "paddleocr_vl"
-    assert enhanced[0].vlm_table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model_source == "vlm"
+    assert enhanced[0].vlm_table_model["source"] == "vlm"
     assert enhanced[0].vlm_selected is True
     assert calls == ["render", "call"]
     assert not getattr(enhanced[0], "vlm_error", None)
@@ -496,7 +496,7 @@ def test_enhance_tables_with_vlm_prefers_valid_vlm_over_rich_pdfplumber_geometry
         assert str(image_path) == str(crop_path)
         return (
             {
-                "source": "paddleocr_vl",
+                "source": "vlm",
                 "row_count": 4,
                 "col_count": 10,
                 "rows": [
@@ -521,9 +521,9 @@ def test_enhance_tables_with_vlm_prefers_valid_vlm_over_rich_pdfplumber_geometry
         model="Qwen3.6-27B",
     )
 
-    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["source"] == "vlm"
     assert enhanced[0].table_model["rows"][0][0] == "项目名称"
-    assert enhanced[0].table_model_source == "paddleocr_vl"
+    assert enhanced[0].table_model_source == "vlm"
     assert enhanced[0].vlm_selected is True
 
 
@@ -561,7 +561,7 @@ def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry
         calls.append(str(image_path))
         return (
             {
-                "source": "paddleocr_vl",
+                "source": "vlm",
                 "row_count": 3,
                 "col_count": 4,
                 "rows": [["项目", "结果", "等级", "时间"], ["绩效", "优秀", "A", "2024"], ["备注", "", "", ""]],
@@ -582,7 +582,7 @@ def test_enhance_tables_with_vlm_calls_model_for_low_quality_pdfplumber_geometry
     )
 
     assert calls == [str(crop_path)]
-    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["source"] == "vlm"
     assert enhanced[0].table_model["row_count"] == 3
     assert enhanced[0].vlm_raw_response == {"id": "vlm-ok"}
 
@@ -631,7 +631,7 @@ def test_enhance_tables_with_vlm_calls_model_for_sparse_fragmented_wide_pdfplumb
         calls.append(str(image_path))
         return (
             {
-                "source": "paddleocr_vl",
+                "source": "vlm",
                 "row_count": 3,
                 "col_count": 4,
                 "rows": [["序号", "年份", "出具的报告名称", "出具时间"], ["1", "2025", "运行及评价证明", ""]],
@@ -652,7 +652,7 @@ def test_enhance_tables_with_vlm_calls_model_for_sparse_fragmented_wide_pdfplumb
     )
 
     assert calls == [str(crop_path)]
-    assert enhanced[0].table_model["source"] == "paddleocr_vl"
+    assert enhanced[0].table_model["source"] == "vlm"
     assert enhanced[0].table_model["rows"][0] == ["序号", "年份", "出具的报告名称", "出具时间"]
 
 

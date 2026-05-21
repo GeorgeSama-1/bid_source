@@ -176,7 +176,7 @@ def _parse_table_model_text(text: str) -> dict[str, Any]:
         ]
     return {
         "schema_version": "table_model_v1",
-        "source": "paddleocr_vl",
+        "source": "vlm",
         "row_count": row_count,
         "col_count": col_count,
         "rows": rows,
@@ -430,7 +430,7 @@ def enhance_tables_with_vlm(
                 original_model=original_model if isinstance(original_model, dict) else None,
                 vlm_model=table_model,
             )
-            selected_source = "paddleocr_vl" if vlm_selected else str(selected_model.get("source") or data.get("table_model_source") or data.get("source_type") or "")
+            selected_source = "vlm" if vlm_selected else str(selected_model.get("source") or data.get("table_model_source") or data.get("source_type") or "")
             data.update(
                 {
                     "rows": selected_model.get("rows") or table.rows,

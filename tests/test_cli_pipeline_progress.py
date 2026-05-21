@@ -251,7 +251,7 @@ def test_pdf_toc_pipeline_enhances_tables_with_vlm_when_enabled(monkeypatch, tmp
         page_no=1,
         rows=[["272608"]],
         bbox=[20, 80, 400, 200],
-        table_model_source="paddleocr_vl",
+        table_model_source="vlm",
     )
     candidate = cli.ReusableCandidate(
         candidate_id="cand-1",
