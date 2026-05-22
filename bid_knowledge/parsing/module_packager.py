@@ -113,6 +113,17 @@ def _bbox_top_y(bbox: list[Any] | None) -> float | None:
         return None
 
 
+def _bbox_vertical_span(bbox: list[Any] | None) -> tuple[float, float] | None:
+    if not bbox or len(bbox) < 4:
+        return None
+    try:
+        top = float(bbox[1])
+        bottom = float(bbox[3])
+    except (TypeError, ValueError):
+        return None
+    return (min(top, bottom), max(top, bottom))
+
+
 def _table_position_bboxes(table: ParsedTable | dict[str, Any]) -> list[list[Any]]:
     data = table.model_dump() if isinstance(table, ParsedTable) else table
     bboxes: list[list[Any]] = []
@@ -143,10 +154,24 @@ def _table_in_range(
     end_page: int,
     end_y: float | None,
 ) -> bool:
-    top_values = [_bbox_top_y(bbox) for bbox in _table_position_bboxes(table)]
-    if not top_values:
-        top_values = [None]
-    return any(_item_in_range(table.page_no, top_y, start_page, start_y, end_page, end_y) for top_y in top_values)
+    bboxes = _table_position_bboxes(table)
+    if not bboxes:
+        return _item_in_range(table.page_no, None, start_page, start_y, end_page, end_y)
+    if not (start_page <= table.page_no <= end_page):
+        return False
+    for bbox in bboxes:
+        span = _bbox_vertical_span(bbox)
+        if span is None:
+            if _item_in_range(table.page_no, _bbox_top_y(bbox), start_page, start_y, end_page, end_y):
+                return True
+            continue
+        top_y, bottom_y = span
+        if table.page_no == start_page and start_y is not None and bottom_y <= float(start_y):
+            continue
+        if table.page_no == end_page and end_y is not None and top_y >= float(end_y):
+            continue
+        return True
+    return False
 
 
 def _text_signature(text: str) -> str:

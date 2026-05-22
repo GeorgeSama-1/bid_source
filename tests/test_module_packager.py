@@ -2344,6 +2344,52 @@ def test_package_module_artifacts_keeps_table_when_original_bbox_matches_section
     assert "项目A" in material_md
 
 
+def test_package_module_artifacts_assigns_overlapping_table_to_leaf_section(tmp_path: Path) -> None:
+    candidate = _candidate(
+        "技术文件 / 2、 专项投标文件 / 2.1、 业绩文件 / 2.1.1、 供货及运行业绩表",
+        12,
+        12,
+        "2.1.1、 供货及运行业绩表",
+    )
+    candidate.material_evidence = {"start_y": 415.0, "end_y": None, "start_block_id": "row-1", "end_block_id": None}
+    blocks = [
+        PdfTextBlock(block_id="row-1", page_no=12, text="1", bbox=[80, 416, 90, 426], block_no=1),
+        PdfTextBlock(block_id="cell-1", page_no=12, text="国网湖北超高压公司", bbox=[165, 459, 273, 510], block_no=2),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="supply-performance-table",
+            page_no=12,
+            rows=[["序号", "工程名称"], ["1", "国网湖北超高压公司"]],
+            bbox=[33, 314, 576, 765],
+            table_region_bbox=[70, 345, 539, 734],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=[candidate],
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["2、 专项投标文件"],
+        planned_section_paths=[candidate.section_path],
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.1、 业绩文件"
+        / "2.1.1、 供货及运行业绩表"
+    )
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    assert (material_dir / "table_items" / "2.1.1、 供货及运行业绩表_表1.json").exists()
+    assert "| 序号 | 工程名称 |" in material_md
+    assert "国网湖北超高压公司" in material_md
+
+
 def test_package_module_artifacts_keeps_long_folder_titles_readable_without_hash_suffix(tmp_path: Path) -> None:
     long_title = "（1.1）、 01-2025年35kV及以上输变电一次设备和装置材料供应业绩证明文件及运行维护服务评价材料补充说明附件资料"
     candidate = _candidate(
