@@ -810,12 +810,15 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
     for table in table_items:
         page_no = int(table.get("page_no") or 0)
         table_id = str(table.get("table_id") or "")
+        has_precise_region = isinstance(table.get("table_region_bbox"), list) and len(table.get("table_region_bbox") or []) >= 4
         for bbox_key in ("bbox", "table_region_bbox"):
             bbox = table.get(bbox_key)
             if page_no and isinstance(bbox, list) and len(bbox) >= 4:
                 grouped[page_no].append(
                     {
                         "bbox": [float(value) for value in bbox[:4]],
+                        "bbox_key": bbox_key,
+                        "has_precise_region": has_precise_region,
                         "source_type": str(table.get("source_type") or ""),
                         "table_id": table_id,
                     }
@@ -826,15 +829,20 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
 def _table_regions_from_parsed_tables(tables: list[ParsedTable]) -> dict[int, list[dict[str, Any]]]:
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for table in tables:
-        bbox = _table_assignment_bbox(table)
-        if table.page_no and isinstance(bbox, list) and len(bbox) >= 4:
-            grouped[int(table.page_no)].append(
-                {
-                    "bbox": [float(value) for value in bbox[:4]],
-                    "source_type": table.source_type,
-                    "table_id": table.table_id,
-                }
-            )
+        data = table.model_dump()
+        has_precise_region = isinstance(data.get("table_region_bbox"), list) and len(data.get("table_region_bbox") or []) >= 4
+        for bbox_key in ("bbox", "table_region_bbox"):
+            bbox = data.get(bbox_key)
+            if table.page_no and isinstance(bbox, list) and len(bbox) >= 4:
+                grouped[int(table.page_no)].append(
+                    {
+                        "bbox": [float(value) for value in bbox[:4]],
+                        "bbox_key": bbox_key,
+                        "has_precise_region": has_precise_region,
+                        "source_type": table.source_type,
+                        "table_id": table.table_id,
+                    }
+                )
     return grouped
 
 
@@ -855,17 +863,35 @@ def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, 
         return ""
     if not isinstance(bbox, list) or len(bbox) < 4:
         return ""
+    form_field = _looks_like_form_field_line(text)
     block_bbox = [float(value) for value in bbox[:4]]
     x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
     center_y = (y0 + y1) / 2
     for region in table_regions.get(int(page_no), []):
+        if form_field and region.get("bbox_key") == "bbox" and region.get("has_precise_region"):
+            continue
         tx0, ty0, tx1, ty1 = region["bbox"]
         inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
         inside_by_overlap = _bbox_overlap_ratio(block_bbox, region["bbox"]) >= 0.15
         if inside_by_center or inside_by_overlap:
             return str(region.get("table_id") or "")
     return ""
+
+
+def _looks_like_form_field_line(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    compact = re.sub(r"\s+", "", stripped)
+    if len(compact) > 120:
+        return False
+    return bool(
+        re.match(
+            r"^(项目名称|项目编号|招标编号|分标名称|分标编号|包名称|包号|分包名称|分包编号)[：:]",
+            compact,
+        )
+    )
 
 
 def _looks_like_table_caption(text: str) -> bool:

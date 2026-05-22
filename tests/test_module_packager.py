@@ -1743,6 +1743,59 @@ def test_package_module_artifacts_omits_page_stream_text_inside_table_items(tmp_
     assert suppressed[0]["suppressed_reason"] == "table_geometry"
 
 
+def test_package_module_artifacts_keeps_form_fields_above_expanded_table_region(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术偏差表",
+            1,
+            1,
+            "技术偏差表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术偏差表", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(block_id="project", page_no=1, text="项目名称：国网甘肃电力2026 年新增第一次物资公开招标采购", bbox=[72, 140, 420, 152], block_no=2),
+        PdfTextBlock(block_id="package-code", page_no=1, text="分标编号：272608-1102000-9998", bbox=[72, 181, 230, 192], block_no=3),
+        PdfTextBlock(block_id="package-name", page_no=1, text="包名称：测控及在线监测系统包05；包号：包05", bbox=[72, 201, 304, 212], block_no=4),
+        PdfTextBlock(block_id="inside-cell", page_no=1, text="序号", bbox=[80, 235, 110, 248], block_no=5),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="deviation-table",
+            page_no=1,
+            rows=[["序号", "偏差事项"], ["1", "最低检测限值"]],
+            bbox=[35, 170, 560, 300],
+            table_region_bbox=[35, 220, 560, 300],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_dir = tmp_path / "modules" / "技术偏差表"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+
+    assert "项目名称：国网甘肃电力2026 年新增第一次物资公开招标采购" in material_md
+    assert "分标编号：272608-1102000-9998" in material_md
+    assert "包名称：测控及在线监测系统包05；包号：包05" in material_md
+    assert "| 序号 | 偏差事项 |" in material_md
+    assert material_md.count("序号") == 1
+
+    form_fields = {item.get("block_id"): item for item in ordered if item.get("block_id") in {"package-code", "package-name"}}
+    assert form_fields["package-code"]["material_role"] == "body_text"
+    assert form_fields["package-name"]["material_role"] == "body_text"
+    suppressed = [item for item in ordered if item.get("block_id") == "inside-cell"]
+    assert suppressed
+    assert suppressed[0]["material_role"] == "table_text"
+    assert suppressed[0]["suppressed_reason"] == "table_geometry"
+
+
 def test_package_module_artifacts_omits_text_repeated_from_inline_table_cells_even_outside_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(

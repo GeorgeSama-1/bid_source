@@ -4,6 +4,7 @@ outputs/
 
 # Local workspace markers
 .codex
+.opencode/
 
 # Local input samples / large working files
 data/
