@@ -3299,6 +3299,7 @@ def test_package_module_artifacts_skips_stream_images_inside_table_regions(tmp_p
     assert "| 项目 | 2024 年 |" in material
     assert "[图片]" in material
     assert "![" not in material
+    assert "image" not in ordered["material_types"]
     assert all(item.get("item_id") != "pp-image-in-table" for item in ordered["items"])
 
 

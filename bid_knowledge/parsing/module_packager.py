@@ -1300,6 +1300,16 @@ def _write_material_package(
         for item in page_material_items or []
         if not _is_title_like_page_material_image(item)
     ]
+    if table_items:
+        table_regions = _table_regions_by_page(table_items)
+        page_material_items = [
+            item
+            for item in page_material_items
+            if not (
+                str(item.get("item_type") or item.get("type") or "") == "image"
+                and _bbox_inside_any_table_region(int(item.get("page_no") or 0), item.get("bbox") or item.get("rect") or [], table_regions)
+            )
+        ]
     _retitle_images_for_material_context(material_dir, image_items, subfolder["folder_title"])
     submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
