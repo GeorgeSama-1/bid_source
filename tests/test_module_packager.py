@@ -1796,6 +1796,52 @@ def test_package_module_artifacts_keeps_form_fields_above_expanded_table_region(
     assert suppressed[0]["suppressed_reason"] == "table_geometry"
 
 
+def test_package_module_artifacts_keeps_intro_text_above_overexpanded_table_bbox(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 科研经费占比",
+            1,
+            1,
+            "科研经费占比",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="科研经费占比", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="intro-1", page_no=1, text="近三年，公司持续保持研发投入，增强研发实力。", bbox=[72, 112, 500, 124], block_no=2),
+        PdfTextBlock(block_id="intro-2", page_no=1, text="公司近3年科研投入占比均在14%以上：", bbox=[72, 132, 500, 144], block_no=3),
+        PdfTextBlock(block_id="header", page_no=1, text="项目\n2024 年\n2023 年\n2022 年", bbox=[76, 155, 466, 166], block_no=4),
+        PdfTextBlock(block_id="data", page_no=1, text="研发投入金额（元）\n152784788.03\n160859217.25\n164908106.75", bbox=[76, 173, 495, 184], block_no=5),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="research-table",
+            page_no=1,
+            rows=[
+                ["项目", "2024 年", "2023 年", "2022 年"],
+                ["研发投入金额（元）", "152784788.03", "160859217.25", "164908106.75"],
+            ],
+            bbox=[35, 104, 558, 805],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "补充文件" / "科研经费占比" / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((tmp_path / "modules" / "补充文件" / "科研经费占比" / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+
+    assert "近三年，公司持续保持研发投入，增强研发实力。" in material_md
+    assert "公司近3年科研投入占比均在14%以上：" in material_md
+    assert material_md.index("公司近3年科研投入占比均在14%以上：") < material_md.index("| 项目 | 2024 年 | 2023 年 | 2022 年 |")
+    assert material_md.count("项目") == 1
+    assert [item["item_type"] for item in ordered[:4]] == ["text", "text", "text", "table"]
+
+
 def test_package_module_artifacts_omits_text_repeated_from_inline_table_cells_even_outside_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(

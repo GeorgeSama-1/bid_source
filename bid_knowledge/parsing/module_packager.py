@@ -607,6 +607,7 @@ def _ordered_material_items(
     decorative_text = _decorative_text_signatures(text_blocks)
     table_regions = _table_regions_by_page(table_items)
     table_cell_signatures = _table_cell_signature_map(table_items)
+    table_effective_tops = _table_effective_top_map(table_items, text_blocks, page_material_items or [])
     heading_candidates = build_heading_candidates(
         [
             _block_dict(block)
@@ -622,7 +623,7 @@ def _ordered_material_items(
             continue
         seen_text_block_ids.add(block.block_id)
         seen_text_signatures.add(_ordered_text_signature(block.text, block.bbox, block.page_no))
-        table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures)
+        table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures, table_effective_tops)
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -648,7 +649,7 @@ def _ordered_material_items(
                 item_type="table",
                 item_id=str(table.get("table_id") or ""),
                 page_no=table.get("page_no"),
-                top_y=table.get("_top_y", 0.0),
+                top_y=table_effective_tops.get(str(table.get("table_id") or ""), float(table.get("_top_y") or 0.0)),
                 table_id=table.get("table_id"),
                 table_title=table.get("table_title"),
                 json_path=table.get("json_path"),
@@ -717,7 +718,7 @@ def _ordered_material_items(
         if nearest:
             raw_title = str(nearest.get("raw_title") or "")
             stream_heading = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
-        material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures) if item_type == "text" else {}
+        material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures, table_effective_tops) if item_type == "text" else {}
         if not material_role:
             material_role = {"material_role": "image" if item_type == "image" else "body_text"}
         ordered.append(
@@ -760,11 +761,16 @@ def _table_text_role_for_block(
     block: PdfTextBlock,
     table_regions: dict[int, list[dict[str, Any]]],
     table_cell_signatures: dict[str, str],
+    table_effective_tops: dict[str, float] | None = None,
 ) -> dict[str, str]:
     if block.source_type == "ocr":
         return {}
     geometry_table_id = _matching_table_region_id(int(block.page_no), block.bbox, table_regions, block.text)
     if geometry_table_id:
+        effective_top = (table_effective_tops or {}).get(geometry_table_id)
+        block_top = _block_top_y(block)
+        if effective_top is not None and block_top is not None and block_top < effective_top:
+            return {"material_role": "body_text"}
         return {
             "material_role": "table_text",
             "suppressed_by_table_id": geometry_table_id,
@@ -784,6 +790,7 @@ def _table_text_role_for_stream_item(
     stream_item: dict[str, Any],
     table_regions: dict[int, list[dict[str, Any]]],
     table_cell_signatures: dict[str, str],
+    table_effective_tops: dict[str, float] | None = None,
 ) -> dict[str, str]:
     text = str(stream_item.get("text") or "")
     geometry_table_id = _matching_table_region_id(
@@ -793,6 +800,11 @@ def _table_text_role_for_stream_item(
         text,
     )
     if geometry_table_id:
+        bbox = stream_item.get("bbox") or []
+        top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
+        effective_top = (table_effective_tops or {}).get(geometry_table_id)
+        if effective_top is not None and top_y < effective_top:
+            return {"material_role": "body_text"}
         return {
             "material_role": "table_text",
             "suppressed_by_table_id": geometry_table_id,
@@ -1205,6 +1217,9 @@ def _table_cell_text_signatures(rows: list[list[Any]]) -> set[str]:
     for row in rows:
         if not isinstance(row, list):
             continue
+        row_signature = _table_cell_text_signature("".join(str(cell or "") for cell in row))
+        if len(row_signature) >= 6:
+            signatures.add(row_signature)
         for cell in row:
             signature = _table_cell_text_signature(str(cell or ""))
             if len(signature) >= 6:
@@ -1230,6 +1245,63 @@ def _table_cell_signature_map(table_items: list[dict[str, Any]]) -> dict[str, st
         for signature in _table_cell_text_signatures(_table_rows_for_signature(table)):
             signatures.setdefault(signature, table_id)
     return signatures
+
+
+def _table_effective_top_map(
+    table_items: list[dict[str, Any]],
+    text_blocks: list[PdfTextBlock],
+    page_material_items: list[dict[str, Any]],
+) -> dict[str, float]:
+    effective_tops: dict[str, float] = {}
+    text_sources: list[dict[str, Any]] = [
+        {
+            "page_no": block.page_no,
+            "top_y": _block_top_y(block),
+            "bbox": block.bbox,
+            "text": block.text,
+        }
+        for block in text_blocks
+    ]
+    text_sources.extend(
+        {
+            "page_no": int(item.get("page_no") or 0),
+            "top_y": float(item.get("top_y") or ((item.get("bbox") or [0, 0])[1] if len(item.get("bbox") or []) >= 2 else 0.0)),
+            "bbox": item.get("bbox") or [],
+            "text": str(item.get("text") or ""),
+        }
+        for item in page_material_items
+        if str(item.get("item_type") or item.get("type") or "") == "text"
+    )
+    for table in table_items:
+        table_id = str(table.get("table_id") or "")
+        if not table_id:
+            continue
+        signatures = _table_cell_text_signatures(_table_rows_for_signature(table))
+        if not signatures:
+            continue
+        page_no = int(table.get("page_no") or 0)
+        table_bbox = table.get("bbox") or []
+        matched_tops: list[float] = []
+        for source in text_sources:
+            if int(source.get("page_no") or 0) != page_no:
+                continue
+            text = str(source.get("text") or "")
+            if not _text_repeated_from_table_cells(text, signatures):
+                continue
+            bbox = source.get("bbox") or []
+            if table_bbox and len(table_bbox) >= 4:
+                if not isinstance(bbox, list) or len(bbox) < 4:
+                    continue
+                source_bbox = [float(value) for value in bbox[:4]]
+                normalized_table_bbox = [float(value) for value in table_bbox[:4]]
+                if _bbox_overlap_ratio(source_bbox, normalized_table_bbox) <= 0:
+                    continue
+            top_y = source.get("top_y")
+            if top_y is not None:
+                matched_tops.append(float(top_y))
+        if matched_tops:
+            effective_tops[table_id] = min(matched_tops)
+    return effective_tops
 
 
 def _table_cell_text_signature(text: str) -> str:
