@@ -314,6 +314,33 @@ def _embedded_images_for_table(table: ParsedTable, images: list[dict[str, Any]] 
     return matches
 
 
+def _embedded_image_ref(image: dict[str, Any], fallback_index: int) -> str:
+    image_id = str(image.get("image_id") or f"image-{fallback_index}").strip() or f"image-{fallback_index}"
+    safe_id = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", image_id).strip("._") or f"image-{fallback_index}"
+    ext = str(image.get("ext") or "png").lower().strip(".") or "png"
+    if ext not in {"png", "jpg", "jpeg", "webp"}:
+        ext = "png"
+    return f"embedded_images/{safe_id}.{ext}"
+
+
+def _attach_embedded_image_refs(table_model: dict[str, Any], embedded_images: list[dict[str, Any]]) -> dict[str, Any]:
+    if not embedded_images or not isinstance(table_model, dict):
+        return table_model
+    refs = [_embedded_image_ref(image, index) for index, image in enumerate(embedded_images, start=1)]
+    cells = table_model.get("cells")
+    if not isinstance(cells, list):
+        return table_model
+    ref_index = 0
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        text = str(cell.get("text") or "").strip()
+        if text == "[图片]" and not cell.get("image_ref") and ref_index < len(refs):
+            cell["image_ref"] = refs[ref_index]
+            ref_index += 1
+    return table_model
+
+
 def _draw_embedded_image_placeholders(page: Any, fitz_module: Any, images: list[dict[str, Any]]) -> None:
     for image in images:
         bbox = _coerce_bbox(image.get("rect") or image.get("bbox"))
@@ -491,6 +518,7 @@ def enhance_tables_with_vlm(
                 request_timeout=request_timeout,
                 max_tokens=max_tokens,
             )
+            table_model = _attach_embedded_image_refs(table_model, embedded_images)
             data = table.model_dump()
             original_model = data.get("table_model")
             selected_model, vlm_selected, original_score, vlm_score = _select_table_model(
@@ -510,6 +538,10 @@ def enhance_tables_with_vlm(
                     "original_table_quality_score": original_score,
                     "table_model_source": selected_source,
                     "table_image_path": str(image_path),
+                    "embedded_image_refs": [
+                        {**image, "image_ref": _embedded_image_ref(image, index)}
+                        for index, image in enumerate(embedded_images, start=1)
+                    ],
                 }
             )
             return _index, ParsedTable(**data)

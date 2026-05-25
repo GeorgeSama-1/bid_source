@@ -434,6 +434,7 @@ def test_enhance_tables_with_vlm_masks_embedded_images_before_model_call(tmp_pat
     assert called_images == [str(masked_path)]
     assert enhanced[0].table_image_path == str(masked_path)
     assert enhanced[0].table_model["rows"] == [["研发投入", "[图片]"]]
+    assert enhanced[0].table_model["cells"][1]["image_ref"] == "embedded_images/chart-screenshot.png"
 
 
 def test_enhance_tables_with_vlm_uses_non_empty_vlm_even_when_pdfplumber_looks_richer(tmp_path: Path, monkeypatch) -> None:

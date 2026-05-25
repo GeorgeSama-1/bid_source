@@ -2194,6 +2194,77 @@ def test_package_module_artifacts_renders_full_detected_table_without_dropping_r
     assert "table_items/企业名称变更_表1.json" not in material_md
 
 
+def test_package_module_artifacts_renders_table_image_cells_as_image_links(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 补充文件 / 科研经费占比",
+            1,
+            1,
+            "科研经费占比",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="h1", page_no=1, text="科研经费占比", bbox=[0, 80, 200, 100], block_no=1),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="research-table",
+            page_no=1,
+            rows=[["项目", "2024 年"], ["研发投入", "[图片]"]],
+            bbox=[10, 130, 500, 260],
+            table_model={
+                "schema_version": "table_model_v1",
+                "source": "vlm",
+                "row_count": 2,
+                "col_count": 2,
+                "rows": [["项目", "2024 年"], ["研发投入", "[图片]"]],
+                "cells": [
+                    {"row": 0, "col": 0, "text": "项目", "rowspan": 1, "colspan": 1},
+                    {"row": 0, "col": 1, "text": "2024 年", "rowspan": 1, "colspan": 1},
+                    {"row": 1, "col": 0, "text": "研发投入", "rowspan": 1, "colspan": 1},
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "text": "[图片]",
+                        "rowspan": 1,
+                        "colspan": 1,
+                        "image_ref": "embedded_images/chart-screenshot.png",
+                    },
+                ],
+                "merged_cells": [],
+            },
+            embedded_image_refs=[
+                {
+                    "image_id": "chart-screenshot",
+                    "image_ref": "embedded_images/chart-screenshot.png",
+                    "page_no": 1,
+                    "rect": [100, 160, 240, 220],
+                }
+            ],
+        ),
+    ]
+    images = [
+        {"image_id": "chart-screenshot", "page_no": 1, "xref": 20, "width": 600, "height": 500, "rect": [100, 160, 240, 220], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "补充文件" / "科研经费占比"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    table_json = json.loads((material_dir / "table_items" / "科研经费占比_表1.json").read_text(encoding="utf-8"))
+
+    assert "| 研发投入 | ![图片](table_items/embedded_images/chart-screenshot.png) |" in material_md
+    assert (material_dir / "table_items" / "embedded_images" / "chart-screenshot.png").exists()
+    assert table_json["table_model"]["cells"][3]["image_ref"] == "embedded_images/chart-screenshot.png"
+
+
 def test_package_module_artifacts_scopes_toc_leaf_sections_by_same_page_y_bounds(tmp_path: Path) -> None:
     candidates = [
         _candidate(

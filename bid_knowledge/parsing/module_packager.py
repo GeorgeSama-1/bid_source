@@ -997,10 +997,41 @@ def _relative_markdown_path(material_dir: Path, path_value: str | None) -> str:
         return str(path)
 
 
-def _render_table_markdown(rows: list[list[Any]]) -> str:
+def _table_image_ref_map(table_data: dict[str, Any]) -> dict[tuple[int, int], str]:
+    table_model = table_data.get("table_model") if isinstance(table_data.get("table_model"), dict) else {}
+    cells = table_model.get("cells") if isinstance(table_model, dict) else []
+    refs: dict[tuple[int, int], str] = {}
+    if not isinstance(cells, list):
+        return refs
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        image_ref = str(cell.get("image_ref") or "").strip()
+        if not image_ref:
+            continue
+        try:
+            row = int(cell.get("row") or 0)
+            col = int(cell.get("col") or 0)
+        except (TypeError, ValueError):
+            continue
+        refs[(row, col)] = image_ref
+    return refs
+
+
+def _render_table_markdown(rows: list[list[Any]], image_refs: dict[tuple[int, int], str] | None = None) -> str:
     if not rows:
         return ""
-    normalized = [[_escape_markdown_table_cell(str(cell or "")) for cell in row] for row in rows]
+    image_refs = image_refs or {}
+    normalized = []
+    for row_index, row in enumerate(rows):
+        normalized_row: list[str] = []
+        for col_index, cell in enumerate(row):
+            image_ref = image_refs.get((row_index, col_index))
+            if image_ref:
+                normalized_row.append(f"![图片]({_escape_markdown_table_cell(image_ref)})")
+            else:
+                normalized_row.append(_escape_markdown_table_cell(str(cell or "")))
+        normalized.append(normalized_row)
     width = max(len(row) for row in normalized)
     padded = [row + [""] * (width - len(row)) for row in normalized]
     header = padded[0]
@@ -1204,7 +1235,11 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-                table_markdown = _render_table_markdown(rows) if _should_inline_table_markdown(rows) else ""
+                image_refs = {
+                    position: str(Path(payload_ref).parent / image_ref)
+                    for position, image_ref in _table_image_ref_map(table_data).items()
+                }
+                table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
                 if table_markdown:
                     lines.extend([table_markdown, ""])
                     seen_table_cell_texts.update(_table_cell_text_signatures(rows))
@@ -1238,6 +1273,40 @@ def _write_material_index_markdown(
     markdown_path = material_dir / "material.md"
     markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return markdown_path
+
+
+def _export_table_embedded_images(
+    *,
+    table_item: dict[str, Any],
+    table_item_dir: Path,
+    images_by_id: dict[str, dict[str, Any]],
+    image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
+) -> None:
+    if not image_bytes_resolver:
+        return
+    refs = table_item.get("embedded_image_refs")
+    if not isinstance(refs, list):
+        return
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        image_ref = str(ref.get("image_ref") or "").strip()
+        image_id = str(ref.get("image_id") or "").strip()
+        if not image_ref or not image_id:
+            continue
+        source = images_by_id.get(image_id)
+        if not source:
+            continue
+        try:
+            image_bytes, ext = image_bytes_resolver(source)
+        except Exception:
+            continue
+        target_path = table_item_dir / image_ref
+        ensure_dir(target_path.parent)
+        if target_path.suffix:
+            target_path.write_bytes(image_bytes)
+        else:
+            target_path.with_suffix(f".{ext or 'png'}").write_bytes(image_bytes)
 
 
 def _backfill_missing_material_indexes(root_dir: Path) -> None:
@@ -3181,6 +3250,7 @@ def package_module_artifacts(
 
             table_items_by_folder: dict[str, list[dict[str, Any]]] = defaultdict(list)
             table_counts: dict[str, int] = {}
+            images_by_id = {str(image.get("image_id") or ""): image for image in module_images if image.get("image_id")}
             for table in sorted(module_tables, key=lambda item: (item.page_no, _table_assignment_top_y(item) or 0.0)):
                 top_y = _table_assignment_top_y(table)
                 subfolder = _subfolder_for_position(section_subfolders, table.page_no, top_y)
@@ -3217,6 +3287,12 @@ def package_module_artifacts(
                 }
                 json_path = item_dir / _item_filename(table_title, "json")
                 item["json_path"] = str(json_path)
+                _export_table_embedded_images(
+                    table_item=item,
+                    table_item_dir=item_dir,
+                    images_by_id=images_by_id,
+                    image_bytes_resolver=image_bytes_resolver,
+                )
                 write_json(json_path, item)
                 tables_index.append(item)
                 if subfolder:
