@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -401,6 +402,7 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
         source_container_title="1、测试章节",
     )
     captured: dict[str, object] = {}
+    elapsed_ticks = iter([100.0, 3825.25])
 
     def fake_parse_pdf(*_, out_dir=None, **__):
         out = Path(out_dir)
@@ -426,6 +428,7 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
     monkeypatch.setattr(cli, "toc_leaf_section_paths", lambda _: [candidate.section_path])
     monkeypatch.setattr(cli, "top_level_modules_from_toc_candidates", lambda _: ["1、测试章节"])
     monkeypatch.setattr(cli, "build_combined_page_material_stream", lambda **_: [])
+    monkeypatch.setattr(cli, "time", SimpleNamespace(perf_counter=lambda: next(elapsed_ticks)), raising=False)
 
     def fake_package_module_artifacts(**kwargs):
         captured["tables"] = kwargs["tables"]
@@ -451,3 +454,7 @@ def test_pdf_toc_pipeline_writes_table_candidate_trace_before_packaging(monkeypa
     assert captured["images"] == []
     assert Path(captured["table_region_out_dir"]).name == "table_regions"
     assert captured["tables"] == [region_table]
+    assert "========== Pipeline Summary ==========" in result.output
+    assert "PDF: demo.pdf" in result.output
+    assert f"Output: {tmp_path / 'out'}" in result.output
+    assert "Total elapsed: 01:02:05.250" in result.output

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,6 +53,23 @@ app = typer.Typer(help="Bid knowledge pre-ingestion parsing and retrieval valida
 
 def _pipeline_echo(step: int, total: int, message: str) -> None:
     typer.echo(f"[{step}/{total}] {message}")
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    milliseconds = int(round(max(0.0, seconds) * 1000))
+    total_seconds, millis = divmod(milliseconds, 1000)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def _pipeline_summary_echo(*, pdf: str, root: Path, elapsed_seconds: float) -> None:
+    typer.echo("")
+    typer.echo("========== Pipeline Summary ==========")
+    typer.echo(f"PDF: {pdf}")
+    typer.echo(f"Output: {root}")
+    typer.echo(f"Total elapsed: {_format_elapsed_seconds(elapsed_seconds)}")
+    typer.echo("======================================")
 
 
 def _make_progress_callback(enabled: bool, label: str):
@@ -418,6 +436,7 @@ def pdf_toc_pipeline_command(
     vlm_table_workers: int = typer.Option(1, "--vlm-table-workers"),
     progress: str = typer.Option("true", "--progress"),
 ) -> None:
+    pipeline_started_at = time.perf_counter()
     pp_structure_enabled = _parse_bool_flag(enable_pp_structure)
     vlm_table_enabled = _parse_bool_flag(enable_vlm_table)
     show_progress = _parse_bool_flag(progress)
@@ -552,7 +571,9 @@ def pdf_toc_pipeline_command(
         layout_masks=layout_masks,
     )
     write_json(root / "pdf_toc_pipeline_manifest.json", manifest)
+    elapsed_seconds = time.perf_counter() - pipeline_started_at
     typer.echo(f"PDF TOC pipeline completed -> {root}")
+    _pipeline_summary_echo(pdf=pdf, root=root, elapsed_seconds=elapsed_seconds)
 
 
 @app.command("build-chunks")
