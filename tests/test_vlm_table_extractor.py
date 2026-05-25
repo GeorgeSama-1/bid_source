@@ -372,6 +372,70 @@ def test_enhance_tables_with_vlm_reuses_existing_candidate_crop(tmp_path: Path, 
     assert enhanced[0].table_model["cells"][0]["text"] == "包05"
 
 
+def test_enhance_tables_with_vlm_masks_embedded_images_before_model_call(tmp_path: Path, monkeypatch) -> None:
+    pdf_path = tmp_path / "demo.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")
+    crop_path = tmp_path / "debug_table_regions" / "region-1.png"
+    crop_path.parent.mkdir()
+    crop_path.write_bytes(b"raw-crop")
+    masked_path = tmp_path / "vlm_tables" / "table_crops" / "region-1.png"
+    table = ParsedTable(
+        table_id="region-1",
+        page_no=1,
+        rows=[],
+        bbox=[10, 20, 210, 220],
+        table_image_path=str(crop_path),
+    )
+    embedded_image = {
+        "image_id": "chart-screenshot",
+        "page_no": 1,
+        "rect": [40, 80, 180, 180],
+    }
+
+    rendered: list[dict[str, object]] = []
+    called_images: list[str] = []
+
+    def fake_render(*, pdf_path, table, out_dir, zoom, embedded_images=None):
+        rendered.append({"table_id": table.table_id, "embedded_images": embedded_images})
+        masked_path.parent.mkdir(parents=True, exist_ok=True)
+        masked_path.write_bytes(b"masked-crop")
+        return masked_path
+
+    def fake_call(*, image_path, endpoint, model, api_key=None, request_timeout=180, max_tokens=4096):
+        called_images.append(str(image_path))
+        return (
+            {
+                "source": "vlm",
+                "row_count": 1,
+                "col_count": 2,
+                "rows": [["研发投入", "[图片]"]],
+                "cells": [
+                    {"row": 0, "col": 0, "text": "研发投入", "rowspan": 1, "colspan": 1},
+                    {"row": 0, "col": 1, "text": "[图片]", "rowspan": 1, "colspan": 1},
+                ],
+                "merged_cells": [],
+            },
+            {"id": "vlm-ok"},
+        )
+
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._render_table_crop", fake_render)
+    monkeypatch.setattr("bid_knowledge.parsing.vlm_table_extractor._call_vlm_table_model", fake_call)
+
+    enhanced = enhance_tables_with_vlm(
+        pdf_path=pdf_path,
+        tables=[table],
+        images=[embedded_image],
+        out_dir=tmp_path / "vlm_tables",
+        endpoint="http://127.0.0.1:8118/v1/chat/completions",
+        model="Qwen3.6-27B",
+    )
+
+    assert rendered == [{"table_id": "region-1", "embedded_images": [embedded_image]}]
+    assert called_images == [str(masked_path)]
+    assert enhanced[0].table_image_path == str(masked_path)
+    assert enhanced[0].table_model["rows"] == [["研发投入", "[图片]"]]
+
+
 def test_enhance_tables_with_vlm_uses_non_empty_vlm_even_when_pdfplumber_looks_richer(tmp_path: Path, monkeypatch) -> None:
     pdf_path = tmp_path / "demo.pdf"
     pdf_path.write_bytes(b"%PDF-1.4")

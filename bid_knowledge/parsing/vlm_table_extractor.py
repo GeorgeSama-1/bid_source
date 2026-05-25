@@ -277,12 +277,67 @@ def _image_to_data_uri(image_path: str | Path) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def _coerce_bbox(value: Any) -> list[float] | None:
+    if not isinstance(value, list) or len(value) < 4:
+        return None
+    try:
+        x0, y0, x1, y1 = [float(item) for item in value[:4]]
+    except (TypeError, ValueError):
+        return None
+    return [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+
+
+def _bbox_overlap_area(a: list[float], b: list[float]) -> float:
+    x0 = max(a[0], b[0])
+    y0 = max(a[1], b[1])
+    x1 = min(a[2], b[2])
+    y1 = min(a[3], b[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)
+
+
+def _embedded_images_for_table(table: ParsedTable, images: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    table_bbox = _coerce_bbox(getattr(table, "bbox", None))
+    if not table_bbox:
+        return []
+    matches: list[dict[str, Any]] = []
+    for image in images or []:
+        if int(image.get("page_no") or 0) != int(table.page_no):
+            continue
+        image_bbox = _coerce_bbox(image.get("rect") or image.get("bbox"))
+        if not image_bbox:
+            continue
+        image_area = max(1.0, (image_bbox[2] - image_bbox[0]) * (image_bbox[3] - image_bbox[1]))
+        if _bbox_overlap_area(table_bbox, image_bbox) / image_area >= 0.8:
+            matches.append(image)
+    return matches
+
+
+def _draw_embedded_image_placeholders(page: Any, fitz_module: Any, images: list[dict[str, Any]]) -> None:
+    for image in images:
+        bbox = _coerce_bbox(image.get("rect") or image.get("bbox"))
+        if not bbox:
+            continue
+        rect = fitz_module.Rect(*bbox)
+        page.draw_rect(rect, color=(0, 0, 0), fill=(1, 1, 1), width=0.8, overlay=True)
+        page.insert_textbox(
+            rect,
+            "[图片]",
+            fontsize=max(8, min(18, rect.height * 0.35)),
+            align=1,
+            color=(0, 0, 0),
+            overlay=True,
+        )
+
+
 def _render_table_crop(
     *,
     pdf_path: str | Path,
     table: ParsedTable,
     out_dir: str | Path,
     zoom: float = 2.0,
+    embedded_images: list[dict[str, Any]] | None = None,
 ) -> Path:
     if not table.bbox or len(table.bbox) < 4:
         raise ValueError(f"table {table.table_id} has no bbox.")
@@ -312,6 +367,8 @@ def _render_table_crop(
             scale_y = page_height / source_height_value
             bbox = [bbox[0] * scale_x, bbox[1] * scale_y, bbox[2] * scale_x, bbox[3] * scale_y]
         clip = fitz.Rect(*bbox)
+        if embedded_images:
+            _draw_embedded_image_placeholders(page, fitz, embedded_images)
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
         pix.save(image_path)
     finally:
@@ -386,6 +443,7 @@ def enhance_tables_with_vlm(
     *,
     pdf_path: str | Path,
     tables: list[ParsedTable],
+    images: list[dict[str, Any]] | None = None,
     out_dir: str | Path,
     endpoint: str | None = None,
     model: str | None = None,
@@ -411,11 +469,20 @@ def enhance_tables_with_vlm(
     def process_one(index_and_table: tuple[int, ParsedTable]) -> tuple[int, ParsedTable]:
         _index, table = index_and_table
         try:
+            embedded_images = _embedded_images_for_table(table, images)
             existing_image_path = getattr(table, "table_image_path", "")
-            if existing_image_path and Path(existing_image_path).exists():
+            if existing_image_path and Path(existing_image_path).exists() and not embedded_images:
                 image_path = Path(existing_image_path)
             else:
-                image_path = _render_table_crop(pdf_path=pdf_path, table=table, out_dir=crop_dir, zoom=2.0)
+                render_kwargs = {
+                    "pdf_path": pdf_path,
+                    "table": table,
+                    "out_dir": crop_dir,
+                    "zoom": 2.0,
+                }
+                if embedded_images:
+                    render_kwargs["embedded_images"] = embedded_images
+                image_path = _render_table_crop(**render_kwargs)
             table_model, raw_response = _call_vlm_table_model(
                 image_path=image_path,
                 endpoint=endpoint,

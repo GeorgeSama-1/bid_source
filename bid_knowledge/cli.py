@@ -497,6 +497,7 @@ def pdf_toc_pipeline_command(
             tables = enhance_tables_with_vlm(
                 pdf_path=pdf,
                 tables=tables,
+                images=images,
                 out_dir=parsed_dir / "vlm_tables",
                 endpoint=vlm_table_endpoint,
                 model=vlm_table_model,
