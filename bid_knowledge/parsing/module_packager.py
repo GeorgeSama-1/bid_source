@@ -1018,6 +1018,78 @@ def _table_image_ref_map(table_data: dict[str, Any]) -> dict[tuple[int, int], st
     return refs
 
 
+def _table_markdown_image_ref(payload_ref: str, image_ref: str) -> str:
+    normalized_ref = image_ref.replace("\\", "/")
+    if normalized_ref.startswith(("image_items/", "./image_items/", "../")) or Path(normalized_ref).is_absolute():
+        return normalized_ref
+    return str(Path(payload_ref).parent / normalized_ref).replace("\\", "/")
+
+
+def _table_embedded_image_ref_map(table_item: dict[str, Any], image_items: list[dict[str, Any]], material_dir: Path) -> dict[str, str]:
+    refs = table_item.get("embedded_image_refs")
+    if not isinstance(refs, list) or not image_items:
+        return {}
+    image_items_by_id = {str(image.get("image_id") or ""): image for image in image_items if image.get("image_id")}
+    mapped: dict[str, str] = {}
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        image_id = str(ref.get("image_id") or "").strip()
+        image_item = image_items_by_id.get(image_id)
+        if not image_item:
+            continue
+        material_ref = _relative_markdown_path(material_dir, image_item.get("file_path")).replace("\\", "/")
+        if not material_ref:
+            continue
+        old_ref = str(ref.get("image_ref") or "").strip()
+        if old_ref:
+            mapped[old_ref] = material_ref
+        if image_id:
+            mapped[image_id] = material_ref
+    return mapped
+
+
+def _retarget_table_model_image_refs(table_model: dict[str, Any], ref_map: dict[str, str]) -> None:
+    cells = table_model.get("cells") if isinstance(table_model, dict) else []
+    if not isinstance(cells, list) or not ref_map:
+        return
+    available_refs = iter(dict.fromkeys(ref_map.values()))
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        image_ref = str(cell.get("image_ref") or "").strip()
+        if image_ref and image_ref in ref_map:
+            cell["image_ref"] = ref_map[image_ref]
+            continue
+        if str(cell.get("text") or "").strip() == "[图片]" and not image_ref:
+            next_ref = next(available_refs, "")
+            if next_ref:
+                cell["image_ref"] = next_ref
+
+
+def _retarget_table_image_refs_to_material_images(table_items: list[dict[str, Any]], image_items: list[dict[str, Any]], material_dir: Path) -> None:
+    if not table_items or not image_items:
+        return
+    for table_item in table_items:
+        ref_map = _table_embedded_image_ref_map(table_item, image_items, material_dir)
+        if not ref_map:
+            continue
+        for model_key in ("table_model", "vlm_table_model"):
+            table_model = table_item.get(model_key)
+            if isinstance(table_model, dict):
+                _retarget_table_model_image_refs(table_model, ref_map)
+        for ref in table_item.get("embedded_image_refs") or []:
+            if isinstance(ref, dict):
+                image_id = str(ref.get("image_id") or "").strip()
+                old_ref = str(ref.get("image_ref") or "").strip()
+                material_ref = ref_map.get(old_ref) or ref_map.get(image_id)
+                if material_ref:
+                    ref["image_ref"] = material_ref
+        json_path = table_item.get("json_path")
+        if json_path:
+            write_json(json_path, {key: value for key, value in table_item.items() if not str(key).startswith("_")})
+
+
 def _render_table_markdown(rows: list[list[Any]], image_refs: dict[tuple[int, int], str] | None = None) -> str:
     if not rows:
         return ""
@@ -1236,7 +1308,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
                 image_refs = {
-                    position: str(Path(payload_ref).parent / image_ref)
+                    position: _table_markdown_image_ref(str(payload_ref), image_ref)
                     for position, image_ref in _table_image_ref_map(table_data).items()
                 }
                 table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
@@ -1380,6 +1452,7 @@ def _write_material_package(
             )
         ]
     _retitle_images_for_material_context(material_dir, image_items, subfolder["folder_title"])
+    _retarget_table_image_refs_to_material_images(table_items, image_items, material_dir)
     submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
     if submaterial_ranges:

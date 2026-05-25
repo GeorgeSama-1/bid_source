@@ -2194,7 +2194,7 @@ def test_package_module_artifacts_renders_full_detected_table_without_dropping_r
     assert "table_items/企业名称变更_表1.json" not in material_md
 
 
-def test_package_module_artifacts_renders_table_image_cells_as_image_links(tmp_path: Path) -> None:
+def test_package_module_artifacts_renders_table_image_cells_with_material_image_links(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "商务文件 / 补充文件 / 科研经费占比",
@@ -2260,9 +2260,9 @@ def test_package_module_artifacts_renders_table_image_cells_as_image_links(tmp_p
     material_md = (material_dir / "material.md").read_text(encoding="utf-8")
     table_json = json.loads((material_dir / "table_items" / "科研经费占比_表1.json").read_text(encoding="utf-8"))
 
-    assert "| 研发投入 | ![图片](table_items/embedded_images/chart-screenshot.png) |" in material_md
-    assert (material_dir / "table_items" / "embedded_images" / "chart-screenshot.png").exists()
-    assert table_json["table_model"]["cells"][3]["image_ref"] == "embedded_images/chart-screenshot.png"
+    assert "| 研发投入 | ![图片](image_items/科研经费占比_图1.png) |" in material_md
+    assert (material_dir / "image_items" / "科研经费占比_图1.png").exists()
+    assert table_json["table_model"]["cells"][3]["image_ref"] == "image_items/科研经费占比_图1.png"
 
 
 def test_package_module_artifacts_scopes_toc_leaf_sections_by_same_page_y_bounds(tmp_path: Path) -> None:
