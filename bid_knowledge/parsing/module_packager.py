@@ -148,27 +148,28 @@ def _table_assignment_top_y(table: ParsedTable | dict[str, Any]) -> float | None
 
 
 def _table_in_range(
-    table: ParsedTable,
+    table: ParsedTable | dict[str, Any],
     start_page: int,
     start_y: float | None,
     end_page: int,
     end_y: float | None,
 ) -> bool:
     bboxes = _table_position_bboxes(table)
+    table_page = int(table.get("page_no") or 0) if isinstance(table, dict) else int(table.page_no)
     if not bboxes:
-        return _item_in_range(table.page_no, None, start_page, start_y, end_page, end_y)
-    if not (start_page <= table.page_no <= end_page):
+        return _item_in_range(table_page, None, start_page, start_y, end_page, end_y)
+    if not (start_page <= table_page <= end_page):
         return False
     for bbox in bboxes:
         span = _bbox_vertical_span(bbox)
         if span is None:
-            if _item_in_range(table.page_no, _bbox_top_y(bbox), start_page, start_y, end_page, end_y):
+            if _item_in_range(table_page, _bbox_top_y(bbox), start_page, start_y, end_page, end_y):
                 return True
             continue
         top_y, bottom_y = span
-        if table.page_no == start_page and start_y is not None and bottom_y <= float(start_y):
+        if table_page == start_page and start_y is not None and bottom_y <= float(start_y):
             continue
-        if table.page_no == end_page and end_y is not None and top_y >= float(end_y):
+        if table_page == end_page and end_y is not None and top_y >= float(end_y):
             continue
         return True
     return False
@@ -607,7 +608,8 @@ def _ordered_material_items(
     decorative_text = _decorative_text_signatures(text_blocks)
     table_regions = _table_regions_by_page(table_items)
     table_cell_signatures = _table_cell_signature_map(table_items)
-    table_effective_tops = _table_effective_top_map(table_items, text_blocks, page_material_items or [])
+    table_effective_bounds = _table_effective_bounds_map(table_items, text_blocks, page_material_items or [])
+    table_effective_tops = {table_id: bounds["top"] for table_id, bounds in table_effective_bounds.items()}
     heading_candidates = build_heading_candidates(
         [
             _block_dict(block)
@@ -623,7 +625,7 @@ def _ordered_material_items(
             continue
         seen_text_block_ids.add(block.block_id)
         seen_text_signatures.add(_ordered_text_signature(block.text, block.bbox, block.page_no))
-        table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures, table_effective_tops)
+        table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures, table_effective_bounds)
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -718,7 +720,7 @@ def _ordered_material_items(
         if nearest:
             raw_title = str(nearest.get("raw_title") or "")
             stream_heading = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
-        material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures, table_effective_tops) if item_type == "text" else {}
+        material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures, table_effective_bounds) if item_type == "text" else {}
         if not material_role:
             material_role = {"material_role": "image" if item_type == "image" else "body_text"}
         ordered.append(
@@ -761,15 +763,14 @@ def _table_text_role_for_block(
     block: PdfTextBlock,
     table_regions: dict[int, list[dict[str, Any]]],
     table_cell_signatures: dict[str, str],
-    table_effective_tops: dict[str, float] | None = None,
+    table_effective_bounds: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, str]:
     if block.source_type == "ocr":
         return {}
     geometry_table_id = _matching_table_region_id(int(block.page_no), block.bbox, table_regions, block.text)
     if geometry_table_id:
-        effective_top = (table_effective_tops or {}).get(geometry_table_id)
         block_top = _block_top_y(block)
-        if effective_top is not None and block_top is not None and block_top < effective_top:
+        if _is_outside_effective_table_y(block_top, (table_effective_bounds or {}).get(geometry_table_id)):
             return {"material_role": "body_text"}
         return {
             "material_role": "table_text",
@@ -790,7 +791,7 @@ def _table_text_role_for_stream_item(
     stream_item: dict[str, Any],
     table_regions: dict[int, list[dict[str, Any]]],
     table_cell_signatures: dict[str, str],
-    table_effective_tops: dict[str, float] | None = None,
+    table_effective_bounds: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, str]:
     text = str(stream_item.get("text") or "")
     geometry_table_id = _matching_table_region_id(
@@ -802,8 +803,7 @@ def _table_text_role_for_stream_item(
     if geometry_table_id:
         bbox = stream_item.get("bbox") or []
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
-        effective_top = (table_effective_tops or {}).get(geometry_table_id)
-        if effective_top is not None and top_y < effective_top:
+        if _is_outside_effective_table_y(top_y, (table_effective_bounds or {}).get(geometry_table_id)):
             return {"material_role": "body_text"}
         return {
             "material_role": "table_text",
@@ -1247,16 +1247,30 @@ def _table_cell_signature_map(table_items: list[dict[str, Any]]) -> dict[str, st
     return signatures
 
 
-def _table_effective_top_map(
+def _is_outside_effective_table_y(top_y: float | None, effective_bounds: dict[str, float] | None) -> bool:
+    if top_y is None or not effective_bounds:
+        return False
+    tolerance = 2.0
+    effective_top = effective_bounds.get("top")
+    effective_bottom = effective_bounds.get("bottom")
+    if effective_top is not None and top_y < effective_top:
+        return True
+    if effective_bottom is not None and top_y > effective_bottom + tolerance:
+        return True
+    return False
+
+
+def _table_effective_bounds_map(
     table_items: list[dict[str, Any]],
     text_blocks: list[PdfTextBlock],
     page_material_items: list[dict[str, Any]],
-) -> dict[str, float]:
-    effective_tops: dict[str, float] = {}
+) -> dict[str, dict[str, float]]:
+    effective_bounds: dict[str, dict[str, float]] = {}
     text_sources: list[dict[str, Any]] = [
         {
             "page_no": block.page_no,
             "top_y": _block_top_y(block),
+            "bottom_y": block.bbox[3] if isinstance(block.bbox, list) and len(block.bbox) >= 4 else None,
             "bbox": block.bbox,
             "text": block.text,
         }
@@ -1266,6 +1280,7 @@ def _table_effective_top_map(
         {
             "page_no": int(item.get("page_no") or 0),
             "top_y": float(item.get("top_y") or ((item.get("bbox") or [0, 0])[1] if len(item.get("bbox") or []) >= 2 else 0.0)),
+            "bottom_y": float((item.get("bbox") or [0, 0, 0, 0])[3]) if len(item.get("bbox") or []) >= 4 else None,
             "bbox": item.get("bbox") or [],
             "text": str(item.get("text") or ""),
         }
@@ -1282,6 +1297,7 @@ def _table_effective_top_map(
         page_no = int(table.get("page_no") or 0)
         table_bbox = table.get("bbox") or []
         matched_tops: list[float] = []
+        matched_bottoms: list[float] = []
         for source in text_sources:
             if int(source.get("page_no") or 0) != page_no:
                 continue
@@ -1299,9 +1315,15 @@ def _table_effective_top_map(
             top_y = source.get("top_y")
             if top_y is not None:
                 matched_tops.append(float(top_y))
+            bottom_y = source.get("bottom_y")
+            if bottom_y is not None:
+                matched_bottoms.append(float(bottom_y))
         if matched_tops:
-            effective_tops[table_id] = min(matched_tops)
-    return effective_tops
+            effective_bounds[table_id] = {
+                "top": min(matched_tops),
+                "bottom": max(matched_bottoms) if matched_bottoms else max(matched_tops),
+            }
+    return effective_bounds
 
 
 def _table_cell_text_signature(text: str) -> str:
@@ -3134,6 +3156,48 @@ def _candidate_precise_scope(section_candidates: list[ReusableCandidate]) -> dic
     }
 
 
+def _candidate_page_scope(section_candidates: list[ReusableCandidate]) -> dict[str, Any] | None:
+    candidates_with_pages = [candidate for candidate in section_candidates if candidate.source_page]
+    if not candidates_with_pages:
+        return None
+    return {
+        "start_page": min(int(candidate.source_page or 0) for candidate in candidates_with_pages),
+        "end_page": max(int(candidate.source_page_end or candidate.source_page or 0) for candidate in candidates_with_pages),
+        "start_y": None,
+        "end_y": None,
+    }
+
+
+def _child_scopes_for_parent_section(
+    section_path: str,
+    grouped_candidates: dict[str, list[ReusableCandidate]],
+) -> list[dict[str, Any]]:
+    parent_parts = _section_parts_tuple(section_path)
+    child_scopes: list[dict[str, Any]] = []
+    for child_path, child_candidates in grouped_candidates.items():
+        child_parts = _section_parts_tuple(child_path)
+        if child_parts[: len(parent_parts)] != parent_parts or len(child_parts) <= len(parent_parts):
+            continue
+        scope = _candidate_precise_scope(child_candidates) or _candidate_page_scope(child_candidates)
+        if scope:
+            child_scopes.append(scope)
+    return child_scopes
+
+
+def _item_in_child_scopes(page_no: int, top_y: float | None, scopes: list[dict[str, Any]]) -> bool:
+    return any(
+        _item_in_range(
+            page_no,
+            top_y,
+            int(scope["start_page"]),
+            scope.get("start_y"),
+            int(scope["end_page"]),
+            scope.get("end_y"),
+        )
+        for scope in scopes
+    )
+
+
 def package_module_artifacts(
     candidates: list[ReusableCandidate],
     blocks: list[PdfTextBlock],
@@ -3524,16 +3588,54 @@ def package_module_artifacts(
             if not section_subfolders and section_candidates:
                 root_folder_title = path_parts[-1] if path_parts else section_path
                 root_image_only = _is_authorization_attachment_leaf(section_path)
+                child_scopes = _child_scopes_for_parent_section(section_path, grouped_candidates)
+                root_blocks = [
+                    block
+                    for block in module_blocks
+                    if not _item_in_child_scopes(block.page_no, _block_top_y(block), child_scopes)
+                ]
+                root_tables_source = [
+                    table
+                    for table in tables_index
+                    if not any(
+                        _table_in_range(
+                            table,
+                            int(scope["start_page"]),
+                            scope.get("start_y"),
+                            int(scope["end_page"]),
+                            scope.get("end_y"),
+                        )
+                        for scope in child_scopes
+                    )
+                ]
+                root_images_source = [
+                    image
+                    for image in images_index
+                    if not _item_in_child_scopes(
+                        int(image.get("page_no") or 0),
+                        float((image.get("rect") or [0, 0, 0, 0])[1]) if image.get("rect") else None,
+                        child_scopes,
+                    )
+                ]
+                root_page_material_items = [
+                    item
+                    for item in module_page_material_items
+                    if not _item_in_child_scopes(
+                        int(item.get("page_no") or 0),
+                        float(item.get("top_y") or 0.0),
+                        child_scopes,
+                    )
+                ]
                 root_text_item = None if root_image_only else _write_text_item(
                     item_dir=text_items_dir,
                     folder_title=root_folder_title,
-                    text_blocks=module_blocks,
+                    text_blocks=root_blocks,
                     section_path=section_path,
                     path_parts=path_parts,
                     pdf_path=pdf_path,
                 )
-                root_table_items = [{**item, "_top_y": float((item.get("bbox") or [0, 0, 0, 0])[1]) if item.get("bbox") else 0.0} for item in tables_index]
-                root_image_items = [{**item, "_top_y": float((item.get("rect") or [0, 0, 0, 0])[1]) if item.get("rect") else 0.0} for item in images_index]
+                root_table_items = [{**item, "_top_y": float((item.get("bbox") or [0, 0, 0, 0])[1]) if item.get("bbox") else 0.0} for item in root_tables_source]
+                root_image_items = [{**item, "_top_y": float((item.get("rect") or [0, 0, 0, 0])[1]) if item.get("rect") else 0.0} for item in root_images_source]
                 material_index.append(
                     _write_material_package(
                         material_dir=section_dir,
@@ -3541,20 +3643,20 @@ def package_module_artifacts(
                             "folder_title": root_folder_title,
                             "page_start": pages[0] if pages else 0,
                             "page_end": pages[-1] if pages else 0,
-                            "start_y": _block_top_y(module_blocks[0]) if module_blocks else None,
-                            "end_y": _block_top_y(module_blocks[-1]) if module_blocks else None,
-                            "start_block_id": module_blocks[0].block_id if module_blocks else None,
-                            "end_block_id": module_blocks[-1].block_id if module_blocks else None,
+                            "start_y": _block_top_y(root_blocks[0]) if root_blocks else None,
+                            "end_y": _block_top_y(root_blocks[-1]) if root_blocks else None,
+                            "start_block_id": root_blocks[0].block_id if root_blocks else None,
+                            "end_block_id": root_blocks[-1].block_id if root_blocks else None,
                         },
                         section_path=section_path,
                         path_parts=path_parts[:-1],
                         pdf_path=pdf_path,
                         doc=doc,
-                        text_blocks=module_blocks,
+                        text_blocks=root_blocks,
                         text_item=root_text_item,
                         table_items=root_table_items,
                         image_items=root_image_items,
-                        page_material_items=module_page_material_items,
+                        page_material_items=root_page_material_items,
                         image_bytes_resolver=image_bytes_resolver,
                         allow_submaterials=not _is_authorization_attachment_leaf(section_path),
                         image_only=root_image_only,

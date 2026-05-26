@@ -1842,6 +1842,76 @@ def test_package_module_artifacts_keeps_intro_text_above_overexpanded_table_bbox
     assert [item["item_type"] for item in ordered[:4]] == ["text", "text", "text", "table"]
 
 
+def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 2、 专项投标文件 / 2.1、 业绩文件 / 2.1.1、 供货及运行业绩表",
+            14,
+            14,
+            "2.1.1、供货及运行业绩表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(
+            block_id="header",
+            page_no=14,
+            text="序号\n产品型式\n工程名称\n数量（单位）或金额（万元）\n投运时间\n联系人及电话\n备注",
+            bbox=[76, 82, 535, 106],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="total",
+            page_no=14,
+            text="合计\n248 套/5817.6232 万元",
+            bbox=[76, 593, 392, 604],
+            block_no=2,
+        ),
+        PdfTextBlock(
+            block_id="notes",
+            page_no=14,
+            text="编制说明：\n1.投标人须按照投标人须知前附表的要求提交业绩证明材料。\n2.仅提供发票和合同关键页的扫描件。",
+            bbox=[76, 626, 533, 733],
+            block_no=3,
+        ),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="performance-table-p3",
+            page_no=14,
+            rows=[
+                ["序号", "产品型式", "工程名称", "数量（单位）或金额（万元）", "投运时间", "联系人及电话", "备注"],
+                ["20", "智能变电站变压器油中溶解气体在线监测装置MGA8000", "国网河北超高压公司500kV瀛州站", "12套/116.3448万元", "2024年", "张弘媛/0311-66093666", "签订日期：2024-06-25"],
+                ["合计", "", "", "248套/5817.6232万元", "", "", ""],
+            ],
+            bbox=[33, 27, 576, 662],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.1、 业绩文件"
+        / "2.1.1、 供货及运行业绩表"
+    )
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    notes_item = next(item for item in ordered if item.get("block_id") == "notes")
+
+    assert "| 序号 | 产品型式 | 工程名称 |" in material_md
+    assert "编制说明：" in material_md
+    assert material_md.index("| 序号 | 产品型式 | 工程名称 |") < material_md.index("编制说明：")
+    assert notes_item["material_role"] == "body_text"
+
+
 def test_package_module_artifacts_omits_text_repeated_from_inline_table_cells_even_outside_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -2076,6 +2146,67 @@ def test_package_module_artifacts_keeps_all_child_links_when_parent_has_preface(
     assert "投标人近三年财务状况如下。" in parent_md
     assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
     assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
+
+
+def test_package_module_artifacts_excludes_child_scope_from_parent_material_body(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "PDF / 2、 专项投标文件 / 2.1、 业绩文件",
+            1,
+            1,
+            "2.1、 业绩文件",
+        ),
+        _candidate(
+            "PDF / 2、 专项投标文件 / 2.1、 业绩文件 / 2.1.1、 供货及运行业绩表",
+            1,
+            1,
+            "2.1.1、 供货及运行业绩表",
+        ),
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 100.0, "end_y": None, "start_block_id": "parent-title"}
+    candidates[1].material_evidence = {"source": "pdf_toc_leaf", "start_y": 240.0, "end_y": None, "start_block_id": "child-title"}
+    blocks = [
+        PdfTextBlock(block_id="parent-title", page_no=1, text="2.1、业绩文件", bbox=[0, 100, 200, 120], block_no=1),
+        PdfTextBlock(block_id="parent-preface", page_no=1, text="本节汇总投标人业绩文件。", bbox=[0, 150, 400, 170], block_no=2),
+        PdfTextBlock(block_id="child-title", page_no=1, text="2.1.1、供货及运行业绩表", bbox=[0, 240, 400, 260], block_no=3),
+        PdfTextBlock(block_id="child-body", page_no=1, text="供货及运行业绩表正文", bbox=[0, 280, 400, 300], block_no=4),
+    ]
+    tables = [
+        ParsedTable(table_id="child-table", page_no=1, rows=[["序号", "工程名称"], ["1", "国网湖北超高压公司"]], bbox=[10, 320, 500, 420]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["2、 专项投标文件"],
+        planned_section_paths=[candidate.section_path for candidate in candidates],
+    )
+
+    parent_md = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.1、 业绩文件"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    child_md = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.1、 业绩文件"
+        / "2.1.1、 供货及运行业绩表"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "本节汇总投标人业绩文件。" in parent_md
+    assert "供货及运行业绩表正文" not in parent_md
+    assert "| 序号 | 工程名称 |" not in parent_md
+    assert "- [2.1.1、 供货及运行业绩表](2.1.1、 供货及运行业绩表/material.md)" in parent_md
+    assert "供货及运行业绩表正文" in child_md
+    assert "| 序号 | 工程名称 |" in child_md
 
 
 def test_backfill_refreshes_child_links_when_parent_markdown_already_exists(tmp_path: Path) -> None:
