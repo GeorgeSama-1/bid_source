@@ -1227,13 +1227,58 @@ def _table_cell_text_signatures(rows: list[list[Any]]) -> set[str]:
     return signatures
 
 
+def _table_rows_without_tail_notes(rows: list[list[Any]]) -> list[list[Any]]:
+    note_start = _tail_note_row_start_index(rows)
+    if note_start is None:
+        return rows
+    return rows[:note_start]
+
+
+def _tail_note_row_start_index(rows: list[list[Any]]) -> int | None:
+    saw_summary_row = False
+    for index, row in enumerate(rows):
+        if not isinstance(row, list):
+            continue
+        cells = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
+        if not cells:
+            continue
+        row_text = "".join(cells)
+        if _looks_like_summary_table_row(row_text):
+            saw_summary_row = True
+            continue
+        if _looks_like_tail_note_text(row_text) and (saw_summary_row or _first_nonempty_cell(row).startswith(("编制说明", "说明"))):
+            return index
+    return None
+
+
+def _first_nonempty_cell(row: list[Any]) -> str:
+    for cell in row:
+        text = str(cell or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _looks_like_summary_table_row(text: str) -> bool:
+    normalized = _table_cell_text_signature(text)
+    return normalized.startswith("合计") or normalized.startswith("总计")
+
+
+def _looks_like_tail_note_text(text: str) -> bool:
+    normalized = _table_cell_text_signature(text)
+    if normalized.startswith(("编制说明", "说明")):
+        return True
+    instruction_markers = ("投标人须", "证明材料", "合同关键页", "发票", "按顺序编制")
+    return any(marker in normalized for marker in instruction_markers)
+
+
 def _table_rows_for_signature(table: dict[str, Any]) -> list[list[Any]]:
     rows = table.get("rows")
     if isinstance(rows, list):
-        return rows
+        return _table_rows_without_tail_notes(rows)
     table_model = table.get("table_model") if isinstance(table.get("table_model"), dict) else {}
     model_rows = table_model.get("rows") if isinstance(table_model, dict) else None
-    return model_rows if isinstance(model_rows, list) else []
+    return _table_rows_without_tail_notes(model_rows) if isinstance(model_rows, list) else []
 
 
 def _table_cell_signature_map(table_items: list[dict[str, Any]]) -> dict[str, str]:
@@ -1401,6 +1446,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
+                rows = _table_rows_without_tail_notes(rows)
                 image_refs = {
                     position: _table_markdown_image_ref(str(payload_ref), image_ref)
                     for position, image_ref in _table_image_ref_map(table_data).items()
@@ -1534,6 +1580,7 @@ def _render_material_items_markdown_lines(
                 continue
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
+            rows = _table_rows_without_tail_notes(rows)
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
             table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
             title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()

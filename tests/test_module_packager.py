@@ -2000,6 +2000,95 @@ def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(
     assert notes_item["material_role"] == "body_text"
 
 
+def test_package_module_artifacts_prefers_full_pdf_tail_note_when_table_model_contains_truncated_note(
+    tmp_path: Path,
+) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 2、 专项投标文件 / 2.1、 业绩文件 / 2.1.1、 供货及运行业绩表",
+            14,
+            14,
+            "2.1.1、供货及运行业绩表",
+        )
+    ]
+    full_note = (
+        "编制说明：\n"
+        "1.投标人须按照投标人须知前附表的要求提交业绩证明材料，证明材料包括供货单位、用户、产品\n"
+        "规格型号等重要产品信息、供货数量及价格等内容，上述内容必须涵盖招标公告所注明的业绩要求\n"
+        "的所有信息。\n"
+        "2.仅提供发票和合同关键页（合同封面和签署页）的扫描件，不需提供整个合同文本。\n"
+        "3.应对业绩证明材料进行编号，且与该表格对应业绩的序号一致，并按顺序编制，即对应序号1的\n"
+        "业绩的所用证明材料编号全部为1，合同和发票复印件应一一对应，且编制在一起，然后制作序号2\n"
+        "的业绩的证明材料，以此类推。"
+    )
+    blocks = [
+        PdfTextBlock(
+            block_id="header",
+            page_no=14,
+            text="序号\n产品型式\n工程名称\n数量（单位）或金额（万元）\n投运时间\n联系人及电话\n备注",
+            bbox=[76, 82, 535, 106],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="total",
+            page_no=14,
+            text="合计\n248 套/5817.6232 万元",
+            bbox=[76, 593, 392, 604],
+            block_no=2,
+        ),
+        PdfTextBlock(
+            block_id="full-note",
+            page_no=14,
+            text=full_note,
+            bbox=[76, 626, 533, 733],
+            block_no=3,
+        ),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="performance-table-p3",
+            page_no=14,
+            rows=[
+                ["序号", "产品型式", "工程名称", "数量（单位）或金额（万元）", "投运时间", "联系人及电话", "备注"],
+                ["20", "智能变电站变压器油中溶解气体在线监测装置MGA8000", "国网河北超高压公司500kV瀛州站", "12套/116.3448万元", "2024年", "张弘媛/0311-66093666", "签订日期：2024-06-25"],
+                ["合计", "", "", "248套/5817.6232万元", "", "", ""],
+                ["编制说明：", "", "", "", "", "", ""],
+                ["1.投标人须按照投标人须知前附表的要求提交业绩证明材料，证明材料包括供货单位、用户、产品", "", "", "", "", "", ""],
+            ],
+            bbox=[33, 27, 576, 662],
+        )
+    ]
+    page_material_items = [
+        {"type": "text", "item_type": "text", "item_id": "pp-note-title", "page_no": 14, "top_y": 1251.9, "text": "编制说明：", "bbox": [149, 1251, 245, 1272], "source_type": "pp_structure_text_region"},
+        {"type": "text", "item_type": "text", "item_id": "pp-note-1", "page_no": 14, "top_y": 1278.6, "text": full_note.split("\n", 2)[1], "bbox": [148, 1278, 1057, 1354], "source_type": "pp_structure_text_region"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        page_material_items=page_material_items,
+        out_dir=tmp_path,
+    )
+
+    material_dir = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.1、 业绩文件"
+        / "2.1.1、 供货及运行业绩表"
+    )
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    notes_item = next(item for item in ordered if item.get("block_id") == "full-note")
+
+    assert full_note in material_md
+    assert material_md.count("编制说明：") == 1
+    assert "1.投标人须按照投标人须知前附表的要求提交业绩证明材料，证明材料包括供货单位、用户、产品 |" not in material_md
+    assert notes_item["material_role"] == "body_text"
+
+
 def test_package_module_artifacts_omits_text_repeated_from_inline_table_cells_even_outside_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(
