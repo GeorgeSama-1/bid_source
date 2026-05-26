@@ -2387,6 +2387,68 @@ def test_package_module_artifacts_excludes_child_scope_from_parent_material_body
     assert "| 序号 | 工程名称 |" in child_md
 
 
+def test_package_module_artifacts_uses_planned_child_heading_scope_to_keep_tables_out_of_parent(tmp_path: Path) -> None:
+    parent_path = "PDF / 2、 专项投标文件 / 2.2、 项目团队情况"
+    child_path = "PDF / 2、 专项投标文件 / 2.2、 项目团队情况 / 2.2.1、 项目团队情况"
+    candidates = [
+        _candidate(
+            parent_path,
+            1,
+            1,
+            "2.2、 项目团队情况",
+        ),
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 80.0, "end_y": None, "start_block_id": "parent-title"}
+    blocks = [
+        PdfTextBlock(block_id="parent-title", page_no=1, text="2.2、项目团队情况", bbox=[0, 80, 260, 100], block_no=1),
+        PdfTextBlock(block_id="parent-preface", page_no=1, text="本节说明项目团队情况。", bbox=[0, 120, 400, 140], block_no=2),
+        PdfTextBlock(block_id="child-title", page_no=1, text="2.2.1、项目团队情况", bbox=[0, 180, 300, 200], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="team-table",
+            page_no=1,
+            rows=[
+                ["层级", "职务", "姓名"],
+                ["项目负责人", "项目经理", "危雪林"],
+            ],
+            bbox=[10, 220, 500, 360],
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["2、 专项投标文件"],
+        planned_section_paths=[parent_path, child_path],
+    )
+
+    parent_md = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.2、 项目团队情况"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+    child_md = (
+        tmp_path
+        / "modules"
+        / "2、 专项投标文件"
+        / "2.2、 项目团队情况"
+        / "2.2.1、 项目团队情况"
+        / "material.md"
+    ).read_text(encoding="utf-8")
+
+    assert "本节说明项目团队情况。" in parent_md
+    assert "| 层级 | 职务 | 姓名 |" not in parent_md
+    assert "- [2.2.1、 项目团队情况](2.2.1、 项目团队情况/material.md)" in parent_md
+    assert "| 层级 | 职务 | 姓名 |" in child_md
+    assert "项目经理" in child_md
+
+
 def test_backfill_refreshes_child_links_when_parent_markdown_already_exists(tmp_path: Path) -> None:
     parent_dir = tmp_path / "modules" / "3.7、 财务状况"
     child_2022 = parent_dir / "3.7.1、 2022 年度财务审计报告"

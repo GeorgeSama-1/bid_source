@@ -3474,6 +3474,66 @@ def _candidate_precise_scope(section_candidates: list[ReusableCandidate]) -> dic
     }
 
 
+def _block_matches_section_heading(section_path: str, block: PdfTextBlock) -> bool:
+    parts = _section_parts(section_path)
+    if not parts:
+        return False
+    target_title = parts[-1]
+    target_number = _title_section_number(target_title)
+    block_number = _title_section_number(block.text)
+    target_key = normalize_section_title(target_title)
+    block_key = normalize_section_title(block.text)
+    if not target_key or not block_key:
+        return False
+    if target_number:
+        if block_number != target_number:
+            return False
+        return target_key == block_key or target_key in block_key or block_key in target_key
+    return target_key == block_key
+
+
+def _inferred_section_scope_map(section_paths: list[str], blocks: list[PdfTextBlock]) -> dict[str, dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for section_path in section_paths:
+        candidates = [block for block in blocks if _block_matches_section_heading(section_path, block)]
+        if not candidates:
+            continue
+        block = sorted(candidates, key=lambda item: (item.page_no, _block_top_y(item) or 0.0, len(item.text or "")))[0]
+        matches.append(
+            {
+                "section_path": section_path,
+                "parts": _section_parts_tuple(section_path),
+                "block": block,
+                "page_no": block.page_no,
+                "top_y": _block_top_y(block) or 0.0,
+            }
+        )
+    matches.sort(key=lambda item: (int(item["page_no"]), float(item["top_y"]), len(item["parts"])))
+    max_page = max([block.page_no for block in blocks], default=0)
+    scopes: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(matches):
+        section_path = str(item["section_path"])
+        parts = tuple(item["parts"])
+        next_boundary = None
+        for candidate in matches[index + 1 :]:
+            candidate_parts = tuple(candidate["parts"])
+            is_descendant = candidate_parts[: len(parts)] == parts and len(candidate_parts) > len(parts)
+            if not is_descendant:
+                next_boundary = candidate
+                break
+        block: PdfTextBlock = item["block"]
+        scopes[section_path] = {
+            "start_page": int(item["page_no"]),
+            "end_page": int(next_boundary["page_no"]) if next_boundary else max_page or int(item["page_no"]),
+            "start_y": float(item["top_y"]),
+            "end_y": float(next_boundary["top_y"]) if next_boundary else None,
+            "start_block_id": block.block_id,
+            "end_block_id": next_boundary["block"].block_id if next_boundary else None,
+            "source": "heading_block",
+        }
+    return scopes
+
+
 def _candidate_page_scope(section_candidates: list[ReusableCandidate]) -> dict[str, Any] | None:
     candidates_with_pages = [candidate for candidate in section_candidates if candidate.source_page]
     if not candidates_with_pages:
@@ -3489,14 +3549,17 @@ def _candidate_page_scope(section_candidates: list[ReusableCandidate]) -> dict[s
 def _child_scopes_for_parent_section(
     section_path: str,
     grouped_candidates: dict[str, list[ReusableCandidate]],
+    inferred_scope_map: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     parent_parts = _section_parts_tuple(section_path)
     child_scopes: list[dict[str, Any]] = []
-    for child_path, child_candidates in grouped_candidates.items():
+    child_paths = set(grouped_candidates) | set(inferred_scope_map or {})
+    for child_path in child_paths:
+        child_candidates = grouped_candidates.get(child_path, [])
         child_parts = _section_parts_tuple(child_path)
         if child_parts[: len(parent_parts)] != parent_parts or len(child_parts) <= len(parent_parts):
             continue
-        scope = _candidate_precise_scope(child_candidates) or _candidate_page_scope(child_candidates)
+        scope = _candidate_precise_scope(child_candidates) or (inferred_scope_map or {}).get(child_path) or _candidate_page_scope(child_candidates)
         if scope:
             child_scopes.append(scope)
     return child_scopes
@@ -3589,19 +3652,23 @@ def package_module_artifacts(
         review_index_entries = align_business_review_index_entries(parse_business_review_index(blocks, tables), set(all_section_paths))
         review_index_map = _subfolder_range_map(review_index_entries, blocks)
         path_mapping = _section_dirnames(all_section_paths)
+        inferred_scope_map = _inferred_section_scope_map(all_section_paths, blocks)
         for section_path in all_section_paths:
             section_candidates = grouped_candidates.get(section_path, [])
             safe_parts = path_mapping.get(section_path, [_safe_dirname(section_path)])
             section_dir = ensure_dir(modules_dir.joinpath(*safe_parts))
             section_subfolders = review_index_map.get(section_path, [])
             section_pages = {page for candidate in section_candidates for page in _page_numbers(candidate)}
+            inferred_scope = inferred_scope_map.get(section_path)
+            if inferred_scope:
+                section_pages.update(range(int(inferred_scope["start_page"]), int(inferred_scope["end_page"]) + 1))
             for subfolder in section_subfolders:
                 section_pages.update(range(int(subfolder["page_start"]), int(subfolder["page_end"]) + 1))
             pages = sorted(section_pages)
             module_blocks = [block for block in blocks if block.page_no in pages]
             decorative_text = _decorative_text_signatures(module_blocks)
             module_blocks = [block for block in module_blocks if not _is_decorative_text_block(block, decorative_text)]
-            candidate_scope = _candidate_precise_scope(section_candidates)
+            candidate_scope = _candidate_precise_scope(section_candidates) or (inferred_scope if not section_candidates else None)
             if candidate_scope:
                 module_blocks = [
                     block
@@ -3903,10 +3970,10 @@ def package_module_artifacts(
                 material_index.append(material_meta)
                 material_markdown_entries.append((folder_title, material_dir / "material.md"))
 
-            if not section_subfolders and section_candidates:
+            if not section_subfolders and (section_candidates or inferred_scope):
                 root_folder_title = path_parts[-1] if path_parts else section_path
                 root_image_only = _is_authorization_attachment_leaf(section_path)
-                child_scopes = _child_scopes_for_parent_section(section_path, grouped_candidates)
+                child_scopes = _child_scopes_for_parent_section(section_path, grouped_candidates, inferred_scope_map)
                 root_blocks = [
                     block
                     for block in module_blocks
