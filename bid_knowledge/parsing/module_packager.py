@@ -1272,6 +1272,45 @@ def _looks_like_tail_note_text(text: str) -> bool:
     return any(marker in normalized for marker in instruction_markers)
 
 
+def _append_tail_note_row(rows: list[list[Any]], note_item: dict[str, Any] | None) -> list[list[Any]]:
+    if not note_item:
+        return rows
+    note_text = str(note_item.get("text") or "").strip()
+    if not note_text:
+        return rows
+    width = max((len(row) for row in rows if isinstance(row, list)), default=1)
+    return [*rows, [note_text, *([""] * max(0, width - 1))]]
+
+
+def _table_tail_notes_by_table_id(ordered_items: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    notes_by_table_id: dict[str, dict[str, Any]] = {}
+    consumed_note_ids: set[str] = set()
+    last_table: dict[str, Any] | None = None
+    for item in ordered_items:
+        item_type = str(item.get("item_type") or item.get("type") or "")
+        if item_type == "table":
+            last_table = item
+            continue
+        if item_type != "text" or last_table is None:
+            continue
+        if _is_ocr_derived_material_text(item) or str(item.get("material_role") or "") == "table_text":
+            continue
+        table_id = str(last_table.get("table_id") or "")
+        if not table_id or table_id in notes_by_table_id:
+            continue
+        if int(item.get("page_no") or 0) != int(last_table.get("page_no") or 0):
+            continue
+        if not _looks_like_tail_note_text(str(item.get("text") or "")):
+            continue
+        notes_by_table_id[table_id] = item
+        consumed_note_ids.add(_material_item_identity(item))
+    return notes_by_table_id, consumed_note_ids
+
+
+def _material_item_identity(item: dict[str, Any]) -> str:
+    return str(item.get("item_id") or item.get("block_id") or item.get("table_id") or item.get("image_id") or "")
+
+
 def _table_rows_for_signature(table: dict[str, Any]) -> list[list[Any]]:
     rows = table.get("rows")
     if isinstance(rows, list):
@@ -1420,10 +1459,13 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
 
     seen_texts: set[str] = set()
     seen_table_cell_texts: set[str] = set()
+    tail_notes_by_table_id, consumed_tail_note_ids = _table_tail_notes_by_table_id(ordered_items)
     text_buffer: list[dict[str, Any]] = []
     for item in ordered_items:
         item_type = str(item.get("item_type") or item.get("type") or "")
         if item_type == "text":
+            if _material_item_identity(item) in consumed_tail_note_ids:
+                continue
             if _is_ocr_derived_material_text(item):
                 continue
             if str(item.get("material_role") or "") == "table_text":
@@ -1447,6 +1489,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
                 rows = _table_rows_without_tail_notes(rows)
+                rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
                 image_refs = {
                     position: _table_markdown_image_ref(str(payload_ref), image_ref)
                     for position, image_ref in _table_image_ref_map(table_data).items()
@@ -1546,6 +1589,7 @@ def _render_material_items_markdown_lines(
 ) -> list[str]:
     lines: list[str] = []
     text_buffer: list[dict[str, Any]] = []
+    tail_notes_by_table_id, consumed_tail_note_ids = _table_tail_notes_by_table_id(ordered_items)
 
     def flush_text() -> None:
         nonlocal text_buffer
@@ -1558,6 +1602,9 @@ def _render_material_items_markdown_lines(
         if item_key in seen_item_keys:
             continue
         if item_type == "text":
+            if _material_item_identity(item) in consumed_tail_note_ids:
+                seen_item_keys.add(item_key)
+                continue
             if _is_ocr_derived_material_text(item):
                 continue
             if str(item.get("material_role") or "") == "table_text":
@@ -1581,6 +1628,7 @@ def _render_material_items_markdown_lines(
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
             rows = _table_rows_without_tail_notes(rows)
+            rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
             table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
             title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()

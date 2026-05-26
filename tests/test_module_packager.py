@@ -2000,7 +2000,7 @@ def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(
     assert notes_item["material_role"] == "body_text"
 
 
-def test_package_module_artifacts_prefers_full_pdf_tail_note_when_table_model_contains_truncated_note(
+def test_package_module_artifacts_renders_full_pdf_tail_note_as_table_row_when_table_model_contains_truncated_note(
     tmp_path: Path,
 ) -> None:
     candidates = [
@@ -2083,7 +2083,8 @@ def test_package_module_artifacts_prefers_full_pdf_tail_note_when_table_model_co
     ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
     notes_item = next(item for item in ordered if item.get("block_id") == "full-note")
 
-    assert full_note in material_md
+    rendered_note = full_note.replace("\n", "<br>")
+    assert f"| {rendered_note} |  |  |  |  |  |  |" in material_md
     assert material_md.count("编制说明：") == 1
     assert "1.投标人须按照投标人须知前附表的要求提交业绩证明材料，证明材料包括供货单位、用户、产品 |" not in material_md
     assert notes_item["material_role"] == "body_text"
