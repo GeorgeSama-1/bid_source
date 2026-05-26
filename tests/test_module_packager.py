@@ -1487,6 +1487,94 @@ def test_package_module_artifacts_writes_complete_section_markdown_with_table_an
     assert (material_dir / "image_items" / "企业名称变更_图1.png").exists()
 
 
+def test_package_module_artifacts_writes_full_document_markdown_in_pdf_order(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "PDF / 2、 专项投标文件 / 2.1、 业绩文件",
+            1,
+            1,
+            "2.1、 业绩文件",
+        ),
+        _candidate(
+            "PDF / 2、 专项投标文件 / 2.1、 业绩文件 / 2.1.1、 供货及运行业绩表",
+            1,
+            1,
+            "2.1.1、 供货及运行业绩表",
+        ),
+        _candidate(
+            "PDF / 2、 专项投标文件 / 2.2、 其他文件",
+            2,
+            2,
+            "2.2、 其他文件",
+        ),
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 80.0, "end_y": None, "start_block_id": "parent-title"}
+    candidates[1].material_evidence = {"source": "pdf_toc_leaf", "start_y": 180.0, "end_y": None, "start_block_id": "child-title"}
+    candidates[2].material_evidence = {"source": "pdf_toc_leaf", "start_y": 80.0, "end_y": None, "start_block_id": "other-title"}
+    blocks = [
+        PdfTextBlock(block_id="parent-title", page_no=1, text="2.1、业绩文件", bbox=[0, 80, 200, 100], block_no=1),
+        PdfTextBlock(block_id="parent-preface", page_no=1, text="业绩文件总体说明。", bbox=[0, 120, 400, 140], block_no=2),
+        PdfTextBlock(block_id="child-title", page_no=1, text="2.1.1、供货及运行业绩表", bbox=[0, 180, 400, 200], block_no=3),
+        PdfTextBlock(block_id="child-body", page_no=1, text="供货及运行业绩表正文。", bbox=[0, 220, 400, 240], block_no=4),
+        PdfTextBlock(block_id="other-title", page_no=2, text="2.2、其他文件", bbox=[0, 80, 200, 100], block_no=5),
+        PdfTextBlock(block_id="other-body", page_no=2, text="其他文件正文。", bbox=[0, 120, 400, 140], block_no=6),
+    ]
+    tables = [
+        ParsedTable(table_id="child-table", page_no=1, rows=[["序号", "工程名称"], ["1", "国网湖北超高压公司"]], bbox=[10, 260, 500, 360]),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["2、 专项投标文件"],
+        planned_section_paths=[candidate.section_path for candidate in candidates],
+    )
+
+    full_md = (tmp_path / "full_document.md").read_text(encoding="utf-8")
+    assert full_md.startswith("# 解析全文")
+    assert "业绩文件总体说明。" in full_md
+    assert "供货及运行业绩表正文。" in full_md
+    assert "| 序号 | 工程名称 |" in full_md
+    assert "其他文件正文。" in full_md
+    assert full_md.index("业绩文件总体说明。") < full_md.index("供货及运行业绩表正文。")
+    assert full_md.index("供货及运行业绩表正文。") < full_md.index("其他文件正文。")
+    assert full_md.count("| 序号 | 工程名称 |") == 1
+
+
+def test_full_document_markdown_uses_root_relative_image_paths(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 3、 补充文件 / 3.5、 有效的税务登记证明（扫描件）",
+            5,
+            5,
+            "3.5、 有效的税务登记证明（扫描件）",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=5, text="3.5、有效的税务登记证明（扫描件）", bbox=[0, 80, 400, 100], block_no=1),
+        PdfTextBlock(block_id="body", page_no=5, text="我公司已提供三证合一后的营业执照副本扫描件。", bbox=[0, 120, 500, 140], block_no=2),
+    ]
+    images = [
+        {"image_id": "tax-proof", "page_no": 5, "xref": 20, "width": 600, "height": 500, "rect": [10, 180, 300, 520], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    full_md = (tmp_path / "full_document.md").read_text(encoding="utf-8")
+    assert "我公司已提供三证合一后的营业执照副本扫描件。" in full_md
+    assert "![有效的税务登记证明（扫描件）_图1](modules/3、 补充文件/3.5、 有效的税务登记证明（扫描件）/image_items/有效的税务登记证明（扫描件）_图1.png)" in full_md
+
+
 def test_package_module_artifacts_omits_text_blocks_inside_rendered_table(tmp_path: Path) -> None:
     candidates = [
         _candidate(

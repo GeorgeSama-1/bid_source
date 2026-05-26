@@ -1424,6 +1424,152 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
     return markdown_path
 
 
+def _write_full_document_markdown(root_dir: Path, modules_dir: Path) -> Path:
+    packages: list[dict[str, Any]] = []
+    for ordered_path in sorted(modules_dir.rglob("ordered_material.json")):
+        data = _load_json_if_exists(ordered_path.parent, ordered_path.name)
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        material_dir = ordered_path.parent
+        child_titles = [title for title, _path in _direct_child_markdown_entries(material_dir)]
+        render_items = _truncate_items_at_child_heading(items, child_titles)
+        first_key = _first_renderable_item_key(render_items)
+        if first_key is None:
+            continue
+        packages.append(
+            {
+                "material_dir": material_dir,
+                "title": str(data.get("material_title") or material_dir.name),
+                "items": render_items,
+                "sort_key": (*first_key, len(material_dir.relative_to(modules_dir).parts)),
+            }
+        )
+
+    lines = ["# 解析全文", ""]
+    seen_texts: set[str] = set()
+    seen_table_cell_texts: set[str] = set()
+    seen_item_keys: set[str] = set()
+    for package in sorted(packages, key=lambda item: item["sort_key"]):
+        heading_level = min(6, len(package["material_dir"].relative_to(modules_dir).parts) + 1)
+        lines.extend([f"{'#' * heading_level} {package['title']}", ""])
+        lines.extend(
+            _render_material_items_markdown_lines(
+                material_dir=package["material_dir"],
+                output_dir=root_dir,
+                ordered_items=package["items"],
+                seen_texts=seen_texts,
+                seen_table_cell_texts=seen_table_cell_texts,
+                seen_item_keys=seen_item_keys,
+            )
+        )
+
+    markdown_path = root_dir / "full_document.md"
+    markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return markdown_path
+
+
+def _truncate_items_at_child_heading(items: list[dict[str, Any]], child_titles: list[str]) -> list[dict[str, Any]]:
+    if not child_titles:
+        return items
+    child_signatures = {_child_heading_signature(title) for title in child_titles}
+    for index, item in enumerate(items):
+        if str(item.get("item_type") or item.get("type") or "") != "text":
+            continue
+        if _child_heading_signature(str(item.get("text") or "").lstrip("#").strip()) in child_signatures:
+            return items[:index]
+    return items
+
+
+def _first_renderable_item_key(items: list[dict[str, Any]]) -> tuple[int, float] | None:
+    for item in items:
+        item_type = str(item.get("item_type") or item.get("type") or "")
+        if item_type == "text" and (_is_ocr_derived_material_text(item) or str(item.get("material_role") or "") == "table_text"):
+            continue
+        if item_type in {"text", "table", "image"}:
+            return int(item.get("page_no") or 0), float(item.get("top_y") or 0.0)
+    return None
+
+
+def _render_material_items_markdown_lines(
+    *,
+    material_dir: Path,
+    output_dir: Path,
+    ordered_items: list[dict[str, Any]],
+    seen_texts: set[str],
+    seen_table_cell_texts: set[str],
+    seen_item_keys: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    text_buffer: list[dict[str, Any]] = []
+
+    def flush_text() -> None:
+        nonlocal text_buffer
+        lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
+        text_buffer = []
+
+    for item in ordered_items:
+        item_type = str(item.get("item_type") or item.get("type") or "")
+        item_key = _full_document_item_key(item)
+        if item_key in seen_item_keys:
+            continue
+        if item_type == "text":
+            if _is_ocr_derived_material_text(item):
+                continue
+            if str(item.get("material_role") or "") == "table_text":
+                continue
+            if _text_repeated_from_table_cells(str(item.get("text") or ""), seen_table_cell_texts):
+                continue
+            seen_item_keys.add(item_key)
+            text_buffer.append(item)
+        elif item_type == "image":
+            flush_text()
+            image_path = _relative_markdown_path(output_dir, item.get("file_path"))
+            title = str(item.get("image_title") or item.get("nearest_heading") or item.get("image_id") or "图片").strip()
+            if image_path:
+                lines.extend([f"![{title}]({image_path})", ""])
+                seen_item_keys.add(item_key)
+        elif item_type == "table":
+            flush_text()
+            payload_ref = item.get("payload_ref")
+            if not payload_ref:
+                continue
+            table_data = _load_json_if_exists(material_dir, str(payload_ref))
+            rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
+            image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
+            table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
+            title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
+            if table_markdown:
+                lines.extend([table_markdown, ""])
+                seen_table_cell_texts.update(_table_cell_text_signatures(rows))
+            else:
+                table_path = _relative_markdown_path(output_dir, str(material_dir / str(payload_ref)))
+                lines.extend([f"[表格：{title}]({table_path})", ""])
+            seen_item_keys.add(item_key)
+    flush_text()
+    return lines
+
+
+def _full_document_table_image_refs(
+    material_dir: Path,
+    output_dir: Path,
+    payload_ref: str,
+    table_data: dict[str, Any],
+) -> dict[tuple[int, int], str]:
+    refs: dict[tuple[int, int], str] = {}
+    for position, image_ref in _table_image_ref_map(table_data).items():
+        local_ref = _table_markdown_image_ref(payload_ref, image_ref)
+        refs[position] = _relative_markdown_path(output_dir, str(material_dir / local_ref)).replace("\\", "/")
+    return refs
+
+
+def _full_document_item_key(item: dict[str, Any]) -> str:
+    item_type = str(item.get("item_type") or item.get("type") or "")
+    for key in ("block_id", "table_id", "image_id", "item_id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return f"{item_type}:{value}"
+    return f"{item_type}:{_text_item_position_signature(item)}"
+
+
 def _write_material_index_markdown(
     material_dir: Path,
     title: str,
@@ -3726,5 +3872,6 @@ def package_module_artifacts(
             doc.close()
 
     _backfill_missing_material_indexes(modules_dir)
+    _write_full_document_markdown(root, modules_dir)
     write_json(root / "global" / "modules_manifest.json", global_manifest)
     return global_manifest
