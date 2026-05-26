@@ -2232,6 +2232,31 @@ def test_backfill_refreshes_child_links_when_parent_markdown_already_exists(tmp_
     assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
 
 
+def test_backfill_strips_expanded_child_body_from_parent_markdown(tmp_path: Path) -> None:
+    parent_dir = tmp_path / "modules" / "2、 专项投标文件" / "2.1、 业绩文件"
+    child_dir = parent_dir / "2.1.1、 供货及运行业绩表"
+    child_dir.mkdir(parents=True)
+    (child_dir / "material.md").write_text("# 2.1.1、 供货及运行业绩表\n\n供货及运行业绩表正文\n", encoding="utf-8")
+    (parent_dir / "material.md").write_text(
+        "# 2.1、 业绩文件\n\n"
+        "招标公告附件2：专用资格要求。\n\n"
+        "2.1.1、供货及运行业绩表\n\n"
+        "供货及运行业绩表\n\n"
+        "| 序号 | 产品型式 |\n"
+        "| --- | --- |\n"
+        "| 1 | MGA8000 |\n",
+        encoding="utf-8",
+    )
+
+    _backfill_missing_material_indexes(tmp_path / "modules")
+
+    parent_md = (parent_dir / "material.md").read_text(encoding="utf-8")
+    assert "招标公告附件2：专用资格要求。" in parent_md
+    assert "供货及运行业绩表\n\n| 序号 | 产品型式 |" not in parent_md
+    assert "| 1 | MGA8000 |" not in parent_md
+    assert "- [2.1.1、 供货及运行业绩表](2.1.1、 供货及运行业绩表/material.md)" in parent_md
+
+
 def test_backfill_sorts_child_links_by_section_number(tmp_path: Path) -> None:
     parent_dir = tmp_path / "modules" / "3、 补充文件"
     for child_name in [

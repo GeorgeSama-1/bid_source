@@ -2884,6 +2884,7 @@ def _append_child_links_to_markdown(material_dir: Path, entries: list[tuple[str,
     markdown_path = material_dir / "material.md"
     current = markdown_path.read_text(encoding="utf-8").rstrip() if markdown_path.exists() else f"# {material_dir.name}"
     current = _strip_child_links_section(current)
+    current = _strip_expanded_child_sections(current, [title for title, _path in entries])
     lines = [current, "", "## 子章节", ""]
     lines.extend(f"- [{title}]({_relative_markdown_path(material_dir, path)})" for title, path in entries)
     markdown_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -2891,6 +2892,21 @@ def _append_child_links_to_markdown(material_dir: Path, entries: list[tuple[str,
 
 def _strip_child_links_section(markdown: str) -> str:
     return re.split(r"\n## 子章节\n", markdown.rstrip(), maxsplit=1)[0].rstrip()
+
+
+def _strip_expanded_child_sections(markdown: str, child_titles: list[str]) -> str:
+    if not child_titles:
+        return markdown.rstrip()
+    lines = markdown.rstrip().splitlines()
+    child_signatures = {_child_heading_signature(title) for title in child_titles}
+    for index, line in enumerate(lines):
+        if _child_heading_signature(line.lstrip("#").strip()) in child_signatures:
+            return "\n".join(lines[:index]).rstrip()
+    return markdown.rstrip()
+
+
+def _child_heading_signature(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 def _write_parent_preface_packages(
