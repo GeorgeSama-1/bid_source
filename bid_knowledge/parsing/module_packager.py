@@ -610,6 +610,7 @@ def _ordered_material_items(
     table_cell_signatures = _table_cell_signature_map(table_items)
     table_effective_bounds = _table_effective_bounds_map(table_items, text_blocks, page_material_items or [])
     table_effective_tops = {table_id: bounds["top"] for table_id, bounds in table_effective_bounds.items()}
+    image_regions = _visual_image_regions_by_page(image_items, page_material_items)
     heading_candidates = build_heading_candidates(
         [
             _block_dict(block)
@@ -626,6 +627,11 @@ def _ordered_material_items(
         seen_text_block_ids.add(block.block_id)
         seen_text_signatures.add(_ordered_text_signature(block.text, block.bbox, block.page_no))
         table_text_role = _table_text_role_for_block(block, table_regions, table_cell_signatures, table_effective_bounds)
+        text_role = (
+            _image_text_role_for_bbox(block.page_no, block.bbox, image_regions)
+            if table_text_role.get("material_role") == "body_text"
+            else {}
+        )
         ordered.append(
             MaterialItemRef(
                 type="text",
@@ -641,7 +647,7 @@ def _ordered_material_items(
                 material_path=material_path,
                 source_type=block.source_type,
                 payload_ref=str(Path(text_item["json_path"]).relative_to(material_dir)) if text_item and text_item.get("json_path") else None,
-                **table_text_role,
+                **(text_role or table_text_role),
             ).model_dump(exclude_none=True)
         )
     for table in table_items:
@@ -723,6 +729,8 @@ def _ordered_material_items(
         material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures, table_effective_bounds) if item_type == "text" else {}
         if not material_role:
             material_role = {"material_role": "image" if item_type == "image" else "body_text"}
+        if item_type == "text" and material_role.get("material_role") == "body_text":
+            material_role = _image_text_role_for_bbox(page_no, bbox, image_regions) or material_role
         ordered.append(
             MaterialItemRef(
                 type=item_type,
@@ -861,6 +869,55 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
                     }
                 )
     return grouped
+
+
+def _visual_image_regions_by_page(
+    image_items: list[dict[str, Any]],
+    page_material_items: list[dict[str, Any]] | None,
+) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for image in image_items:
+        page_no = int(image.get("page_no") or 0)
+        bbox = image.get("rect") or image.get("bbox") or []
+        image_id = str(image.get("image_id") or image.get("item_id") or "")
+        if page_no and isinstance(bbox, list) and len(bbox) >= 4 and image_id:
+            grouped[page_no].append({"bbox": [float(value) for value in bbox[:4]], "image_id": image_id})
+    for item in page_material_items or []:
+        if str(item.get("item_type") or item.get("type") or "") != "image":
+            continue
+        page_no = int(item.get("page_no") or 0)
+        bbox = item.get("bbox") or item.get("rect") or []
+        image_id = str(item.get("image_id") or item.get("item_id") or "")
+        if page_no and isinstance(bbox, list) and len(bbox) >= 4 and image_id:
+            grouped[page_no].append({"bbox": [float(value) for value in bbox[:4]], "image_id": image_id})
+    return grouped
+
+
+def _image_text_role_for_bbox(page_no: int, bbox: Any, image_regions: dict[int, list[dict[str, Any]]]) -> dict[str, str]:
+    image_id = _matching_visual_image_region_id(page_no, bbox, image_regions)
+    if not image_id:
+        return {}
+    return {
+        "material_role": "image_text",
+        "suppressed_by_image_id": image_id,
+        "suppressed_reason": "image_geometry",
+    }
+
+
+def _matching_visual_image_region_id(page_no: int, bbox: Any, image_regions: dict[int, list[dict[str, Any]]]) -> str:
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return ""
+    text_bbox = [float(value) for value in bbox[:4]]
+    x0, y0, x1, y1 = text_bbox
+    center_x = (x0 + x1) / 2
+    center_y = (y0 + y1) / 2
+    for region in image_regions.get(int(page_no), []):
+        rx0, ry0, rx1, ry1 = region["bbox"]
+        inside_by_center = rx0 <= center_x <= rx1 and ry0 <= center_y <= ry1
+        inside_by_overlap = _bbox_overlap_ratio(text_bbox, region["bbox"]) >= 0.8
+        if inside_by_center and inside_by_overlap:
+            return str(region.get("image_id") or "")
+    return ""
 
 
 def _table_regions_from_parsed_tables(tables: list[ParsedTable]) -> dict[int, list[dict[str, Any]]]:
@@ -1173,6 +1230,10 @@ def _is_ocr_derived_material_text(item: dict[str, Any]) -> bool:
     return bool(payload.get("ocr_texts"))
 
 
+def _is_suppressed_material_text(item: dict[str, Any]) -> bool:
+    return str(item.get("material_role") or "") in {"table_text", "image_text"}
+
+
 def _is_field_label_text(text: str) -> bool:
     stripped = str(text or "").strip()
     return bool(stripped and len(stripped) <= 40 and re.search(r"[：:]\s*$", stripped))
@@ -1293,7 +1354,7 @@ def _table_tail_notes_by_table_id(ordered_items: list[dict[str, Any]]) -> tuple[
             continue
         if item_type != "text" or last_table is None:
             continue
-        if _is_ocr_derived_material_text(item) or str(item.get("material_role") or "") == "table_text":
+        if _is_ocr_derived_material_text(item) or _is_suppressed_material_text(item):
             continue
         table_id = str(last_table.get("table_id") or "")
         if not table_id or table_id in notes_by_table_id:
@@ -1450,7 +1511,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
         or (
             str(item.get("item_type") or item.get("type") or "") == "text"
             and not _is_ocr_derived_material_text(item)
-            and str(item.get("material_role") or "") != "table_text"
+            and not _is_suppressed_material_text(item)
         )
         for item in ordered_items
     )
@@ -1468,7 +1529,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 continue
             if _is_ocr_derived_material_text(item):
                 continue
-            if str(item.get("material_role") or "") == "table_text":
+            if _is_suppressed_material_text(item):
                 continue
             if _text_repeated_from_table_cells(str(item.get("text") or ""), seen_table_cell_texts):
                 continue
@@ -1571,7 +1632,7 @@ def _truncate_items_at_child_heading(items: list[dict[str, Any]], child_titles: 
 def _first_renderable_item_key(items: list[dict[str, Any]]) -> tuple[int, float] | None:
     for item in items:
         item_type = str(item.get("item_type") or item.get("type") or "")
-        if item_type == "text" and (_is_ocr_derived_material_text(item) or str(item.get("material_role") or "") == "table_text"):
+        if item_type == "text" and (_is_ocr_derived_material_text(item) or _is_suppressed_material_text(item)):
             continue
         if item_type in {"text", "table", "image"}:
             return int(item.get("page_no") or 0), float(item.get("top_y") or 0.0)
@@ -1607,7 +1668,7 @@ def _render_material_items_markdown_lines(
                 continue
             if _is_ocr_derived_material_text(item):
                 continue
-            if str(item.get("material_role") or "") == "table_text":
+            if _is_suppressed_material_text(item):
                 continue
             if _text_repeated_from_table_cells(str(item.get("text") or ""), seen_table_cell_texts):
                 continue

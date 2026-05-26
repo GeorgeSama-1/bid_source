@@ -3418,6 +3418,96 @@ def test_package_module_artifacts_prefers_pdf_embedded_images_over_pp_structure_
     assert all(item.get("item_id") != "pp-image-1" for item in ordered["items"])
 
 
+def test_package_module_artifacts_suppresses_text_inside_exported_image_regions(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "商务文件 / 技术方案 / 系统架构图",
+            1,
+            1,
+            "系统架构图",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="系统架构图", bbox=[20, 40, 180, 60], block_no=1),
+        PdfTextBlock(block_id="shape-text", page_no=1, text="流程节点文字", bbox=[120, 130, 220, 150], block_no=2),
+        PdfTextBlock(block_id="body", page_no=1, text="图后说明文字", bbox=[20, 320, 220, 340], block_no=3),
+    ]
+    images = [
+        {"image_id": "shape-img", "page_no": 1, "xref": 31, "width": 800, "height": 360, "rect": [90, 100, 330, 260], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"shape-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "技术方案" / "系统架构图"
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    shape_text = next(item for item in ordered["items"] if item.get("block_id") == "shape-text")
+    assert shape_text["material_role"] == "image_text"
+    assert shape_text["suppressed_by_image_id"] == "shape-img"
+    assert shape_text["suppressed_reason"] == "image_geometry"
+    assert "流程节点文字" not in material_md
+    assert "图后说明文字" in material_md
+    assert "![系统架构图_图1](image_items/系统架构图_图1.png)" in material_md
+
+
+def test_package_module_artifacts_suppresses_text_inside_pp_structure_image_regions(tmp_path: Path) -> None:
+    pdf_path = _write_demo_pdf(tmp_path / "demo.pdf", page_count=1)
+    candidates = [
+        _candidate(
+            "商务文件 / 技术方案 / 图标说明",
+            1,
+            1,
+            "图标说明",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="图标说明", bbox=[20, 40, 160, 60], block_no=1),
+        PdfTextBlock(block_id="icon-text", page_no=1, text="图标内部文字", bbox=[130, 135, 230, 155], block_no=2),
+        PdfTextBlock(block_id="body", page_no=1, text="图标后的正文", bbox=[20, 330, 220, 350], block_no=3),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="pp-image-icon",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=110,
+            bbox=[100, 110, 330, 260],
+            text="",
+            payload={"layout_label": "image", "page_width": 595, "page_height": 842},
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        pdf_path=pdf_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "技术方案" / "图标说明"
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+
+    icon_text = next(item for item in ordered["items"] if item.get("block_id") == "icon-text")
+    assert icon_text["material_role"] == "image_text"
+    assert icon_text["suppressed_by_image_id"] == "pp-image-icon"
+    assert "图标内部文字" not in material_md
+    assert "图标后的正文" in material_md
+    assert "![图标说明_图1](image_items/图标说明_图1.png)" in material_md
+
+
 def test_package_module_artifacts_keeps_global_fu_content_inline(tmp_path: Path) -> None:
     candidates = [
         _candidate(
