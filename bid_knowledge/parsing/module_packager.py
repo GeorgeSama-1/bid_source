@@ -779,6 +779,8 @@ def _table_text_role_for_block(
         return {}
     geometry_table_id = _matching_table_region_id(int(block.page_no), block.bbox, table_regions, block.text)
     if geometry_table_id:
+        if _should_keep_text_crossing_precise_table_bottom(int(block.page_no), block.bbox, table_regions, geometry_table_id, block.text):
+            return {"material_role": "body_text"}
         block_top = _block_top_y(block)
         if _is_outside_effective_table_y(block_top, (table_effective_bounds or {}).get(geometry_table_id)):
             return {"material_role": "body_text"}
@@ -814,6 +816,14 @@ def _table_text_role_for_stream_item(
     )
     if geometry_table_id:
         bbox = stream_item.get("bbox") or []
+        if _should_keep_text_crossing_precise_table_bottom(
+            int(stream_item.get("page_no") or 0),
+            bbox,
+            table_regions,
+            geometry_table_id,
+            text,
+        ):
+            return {"material_role": "body_text"}
         top_y = float(stream_item.get("top_y") or (bbox[1] if len(bbox) >= 2 else 0.0))
         if _is_outside_effective_table_y(top_y, (table_effective_bounds or {}).get(geometry_table_id)):
             return {"material_role": "body_text"}
@@ -968,13 +978,12 @@ def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, 
         return ""
     if not isinstance(bbox, list) or len(bbox) < 4:
         return ""
-    form_field = _looks_like_form_field_line(text)
     block_bbox = [float(value) for value in bbox[:4]]
     x0, y0, x1, y1 = block_bbox
     center_x = (x0 + x1) / 2
     center_y = (y0 + y1) / 2
     for region in table_regions.get(int(page_no), []):
-        if form_field and region.get("bbox_key") == "bbox" and region.get("has_precise_region"):
+        if region.get("bbox_key") == "bbox" and region.get("has_precise_region"):
             continue
         tx0, ty0, tx1, ty1 = region["bbox"]
         inside_by_center = tx0 <= center_x <= tx1 and ty0 <= center_y <= ty1
@@ -982,6 +991,34 @@ def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, 
         if inside_by_center or inside_by_overlap:
             return str(region.get("table_id") or "")
     return ""
+
+
+def _should_keep_text_crossing_precise_table_bottom(
+    page_no: int,
+    bbox: Any,
+    table_regions: dict[int, list[dict[str, Any]]],
+    table_id: str,
+    text: str,
+) -> bool:
+    if not isinstance(bbox, list) or len(bbox) < 4 or not table_id:
+        return False
+    normalized = _table_cell_text_signature(text)
+    if not _looks_like_tail_note_text(text) and "编制说明" not in normalized and "说明" not in normalized:
+        return False
+    block_bbox = [float(value) for value in bbox[:4]]
+    y0 = block_bbox[1]
+    y1 = block_bbox[3]
+    for region in table_regions.get(int(page_no), []):
+        if str(region.get("table_id") or "") != str(table_id):
+            continue
+        if region.get("bbox_key") != "table_region_bbox":
+            continue
+        rx0, ry0, rx1, ry1 = region["bbox"]
+        horizontally_overlaps = max(block_bbox[0], rx0) < min(block_bbox[2], rx1)
+        crosses_bottom = y0 < ry1 and y1 > ry1 + 2.0
+        if horizontally_overlaps and crosses_bottom:
+            return True
+    return False
 
 
 def _bbox_can_match_table_cell_region(page_no: int, bbox: Any, table_regions: dict[int, list[dict[str, Any]]], table_id: str) -> bool:
@@ -1413,7 +1450,7 @@ def _looks_like_summary_table_row(text: str) -> bool:
 
 def _looks_like_tail_note_text(text: str) -> bool:
     normalized = _table_cell_text_signature(text)
-    if normalized.startswith(("编制说明", "说明")):
+    if normalized.startswith(("编制说明", "说明")) or "编制说明" in normalized:
         return True
     instruction_markers = ("投标人须", "证明材料", "合同关键页", "发票", "按顺序编制")
     return any(marker in normalized for marker in instruction_markers)
@@ -1526,7 +1563,7 @@ def _table_effective_bounds_map(
         if not signatures:
             continue
         page_no = int(table.get("page_no") or 0)
-        table_bbox = table.get("bbox") or []
+        table_bbox = table.get("table_region_bbox") or table.get("bbox") or []
         matched_tops: list[float] = []
         matched_bottoms: list[float] = []
         for source in text_sources:

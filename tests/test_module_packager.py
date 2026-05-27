@@ -2078,6 +2078,127 @@ def test_package_module_artifacts_keeps_preceding_text_and_trims_duplicate_leadi
     assert material_md.index(outside_text) < material_md.index("| 项目单位：国网辽宁省电力有限公司")
 
 
+def test_package_module_artifacts_uses_precise_table_region_for_suppression_when_bbox_is_expanded(
+    tmp_path: Path,
+) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    outside_text = (
+        "技术特性参数表\n"
+        "项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目\n"
+        "招标编号：2224AA                 分标名称：交流盘形悬式瓷绝缘子\n"
+        "分标编号：2224AA-1405025-3401     包名称：包1-包6          包号：包1-包6"
+    )
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="2.1、技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="outside-meta", page_no=1, text=outside_text, bbox=[53, 118, 494, 198], block_no=2),
+        PdfTextBlock(
+            block_id="inside-table",
+            page_no=1,
+            text="项目单位：国网辽宁省电力有限公司\n项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目\n序号\n名称",
+            bbox=[53, 202, 542, 260],
+            block_no=3,
+        ),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="tech-table",
+            page_no=1,
+            rows=[
+                ["项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目", "", "", "", ""],
+                ["招标编号：2224AA", "", "分标名称：交流盘形悬式瓷绝缘子", "", ""],
+                ["分标编号：2224AA-1405025-3401", "", "包名称：包1-包6", "包号：包1-包6", ""],
+                ["项目单位：国网辽宁省电力有限公司", "", "项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目", "", ""],
+                ["序号", "名称", "单位", "招标人要求值", "投标人保证值"],
+                ["1", "绝缘件公称直径", "mm", "255", "255"],
+            ],
+            bbox=[6, 110, 587, 691],
+            table_region_bbox=[46, 200, 547, 658],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((tmp_path / "modules" / "技术特性参数表" / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    outside_item = next(item for item in ordered if item.get("block_id") == "outside-meta")
+    inside_item = next(item for item in ordered if item.get("block_id") == "inside-table")
+
+    assert outside_text in material_md
+    assert material_md.count("招标编号：2224AA") == 1
+    assert "| 招标编号：2224AA |  | 分标名称：交流盘形悬式瓷绝缘子 |" not in material_md
+    assert "| 项目单位：国网辽宁省电力有限公司 |" in material_md
+    assert outside_item["material_role"] == "body_text"
+    assert inside_item["material_role"] == "table_text"
+    assert inside_item["suppressed_reason"] == "table_geometry"
+
+
+def test_package_module_artifacts_keeps_tail_note_crossing_precise_table_bottom(
+    tmp_path: Path,
+) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    tail_text = (
+        "10.3 适用于1000kV 年均劣化率 % 0.005 0.005 "
+        "11 工频击穿电压 kV 110 110 "
+        "12 冲击击穿电压（标幺值） 2.8 "
+        "编制说明： 1、请抄录已获取招标文件技术规范书《技术特性参数表》的数据、信息或表述，"
+        "填写本表对应条目并逐项对应作出投标。"
+    )
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="table-body", page_no=1, text="序号\n名称\n单位\n招标人要求值\n投标人保证值", bbox=[53, 202, 542, 230], block_no=2),
+        PdfTextBlock(block_id="tail-crossing", page_no=1, text=tail_text, bbox=[53, 608, 542, 750], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="tech-table",
+            page_no=1,
+            rows=[
+                ["项目单位：国网辽宁省电力有限公司", "", "项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目", "", ""],
+                ["序号", "名称", "单位", "招标人要求值", "投标人保证值"],
+                ["12", "冲击击穿电压（标幺值）", "", "", "2.8"],
+            ],
+            bbox=[6, 110, 587, 760],
+            table_region_bbox=[46, 200, 547, 658],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((tmp_path / "modules" / "技术特性参数表" / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    tail_item = next(item for item in ordered if item.get("block_id") == "tail-crossing")
+
+    assert "编制说明：" in material_md
+    assert "填写本表对应条目并逐项对应作出投标" in material_md
+    assert tail_item["material_role"] == "body_text"
+
+
 def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(
