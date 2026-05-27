@@ -137,9 +137,13 @@ def _table_position_bboxes(table: ParsedTable | dict[str, Any]) -> list[list[Any
 
 
 def _table_assignment_bbox(table: ParsedTable | dict[str, Any]) -> list[Any] | None:
-    bboxes = _table_position_bboxes(table)
-    if bboxes:
-        return bboxes[0]
+    data = table.model_dump() if isinstance(table, ParsedTable) else table
+    region_bbox = data.get("table_region_bbox")
+    if isinstance(region_bbox, list) and len(region_bbox) >= 4:
+        return region_bbox
+    bbox = data.get("bbox")
+    if isinstance(bbox, list) and len(bbox) >= 4:
+        return bbox
     return None
 
 
@@ -657,7 +661,7 @@ def _ordered_material_items(
                 item_type="table",
                 item_id=str(table.get("table_id") or ""),
                 page_no=table.get("page_no"),
-                top_y=table_effective_tops.get(str(table.get("table_id") or ""), float(table.get("_top_y") or 0.0)),
+                top_y=table_effective_tops.get(str(table.get("table_id") or ""), _table_item_order_top_y(table)),
                 table_id=table.get("table_id"),
                 table_title=table.get("table_title"),
                 json_path=table.get("json_path"),
@@ -779,6 +783,8 @@ def _table_text_role_for_block(
         return {}
     geometry_table_id = _matching_table_region_id(int(block.page_no), block.bbox, table_regions, block.text)
     if geometry_table_id:
+        if _should_keep_text_crossing_precise_table_top(int(block.page_no), block.bbox, table_regions, geometry_table_id):
+            return {"material_role": "body_text"}
         if _should_keep_text_crossing_precise_table_bottom(int(block.page_no), block.bbox, table_regions, geometry_table_id, block.text):
             return {"material_role": "body_text"}
         block_top = _block_top_y(block)
@@ -816,6 +822,13 @@ def _table_text_role_for_stream_item(
     )
     if geometry_table_id:
         bbox = stream_item.get("bbox") or []
+        if _should_keep_text_crossing_precise_table_top(
+            int(stream_item.get("page_no") or 0),
+            bbox,
+            table_regions,
+            geometry_table_id,
+        ):
+            return {"material_role": "body_text"}
         if _should_keep_text_crossing_precise_table_bottom(
             int(stream_item.get("page_no") or 0),
             bbox,
@@ -890,6 +903,18 @@ def _table_regions_by_page(table_items: list[dict[str, Any]]) -> dict[int, list[
                     }
                 )
     return grouped
+
+
+def _table_item_order_top_y(table: dict[str, Any]) -> float:
+    region_bbox = table.get("table_region_bbox")
+    if isinstance(region_bbox, list) and len(region_bbox) >= 2:
+        return float(region_bbox[1])
+    if table.get("_top_y") is not None:
+        return float(table.get("_top_y") or 0.0)
+    bbox = table.get("bbox")
+    if isinstance(bbox, list) and len(bbox) >= 2:
+        return float(bbox[1])
+    return 0.0
 
 
 def _visual_image_regions_by_page(
@@ -991,6 +1016,32 @@ def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, 
         if inside_by_center or inside_by_overlap:
             return str(region.get("table_id") or "")
     return ""
+
+
+def _should_keep_text_crossing_precise_table_top(
+    page_no: int,
+    bbox: Any,
+    table_regions: dict[int, list[dict[str, Any]]],
+    table_id: str,
+) -> bool:
+    if not isinstance(bbox, list) or len(bbox) < 4 or not table_id:
+        return False
+    block_bbox = [float(value) for value in bbox[:4]]
+    y0 = block_bbox[1]
+    y1 = block_bbox[3]
+    height = max(y1 - y0, 1.0)
+    for region in table_regions.get(int(page_no), []):
+        if str(region.get("table_id") or "") != str(table_id):
+            continue
+        if region.get("bbox_key") != "table_region_bbox":
+            continue
+        rx0, ry0, rx1, _ry1 = region["bbox"]
+        horizontally_overlaps = max(block_bbox[0], rx0) < min(block_bbox[2], rx1)
+        crosses_top = y0 < ry0 - 2.0 and y1 > ry0
+        above_ratio = max(0.0, ry0 - y0) / height
+        if horizontally_overlaps and crosses_top and above_ratio >= 0.25:
+            return True
+    return False
 
 
 def _should_keep_text_crossing_precise_table_bottom(
@@ -1450,20 +1501,59 @@ def _looks_like_summary_table_row(text: str) -> bool:
 
 def _looks_like_tail_note_text(text: str) -> bool:
     normalized = _table_cell_text_signature(text)
-    if normalized.startswith(("编制说明", "说明")) or "编制说明" in normalized:
+    if _starts_like_tail_note_text(text) or "编制说明" in normalized:
         return True
     instruction_markers = ("投标人须", "证明材料", "合同关键页", "发票", "按顺序编制")
     return any(marker in normalized for marker in instruction_markers)
 
 
+def _starts_like_tail_note_text(text: str) -> bool:
+    normalized = _table_cell_text_signature(text)
+    if normalized.startswith(("编制说明", "说明")):
+        return True
+    instruction_markers = ("投标人须", "证明材料", "合同关键页", "发票", "按顺序编制")
+    return any(normalized.startswith(marker) for marker in instruction_markers)
+
+
 def _append_tail_note_row(rows: list[list[Any]], note_item: dict[str, Any] | None) -> list[list[Any]]:
     if not note_item:
         return rows
-    note_text = str(note_item.get("text") or "").strip()
+    note_text = _trim_repeated_table_prefix_from_tail_note(str(note_item.get("text") or ""), rows)
     if not note_text:
         return rows
     width = max((len(row) for row in rows if isinstance(row, list)), default=1)
     return [*rows, [note_text, *([""] * max(0, width - 1))]]
+
+
+def _table_cell_text_signature_with_offsets(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    offsets: list[int] = []
+    for index, char in enumerate(str(text or "")):
+        normalized = char.replace("₂", "2").replace("μ", "u").replace("µ", "u")
+        for normalized_char in normalized:
+            if re.match(r"[\s，,。；;：:、（）()\[\]【】<>《》\-—_]", normalized_char):
+                continue
+            normalized_chars.append(normalized_char)
+            offsets.append(index)
+    return "".join(normalized_chars), offsets
+
+
+def _trim_repeated_table_prefix_from_tail_note(text: str, rows: list[list[Any]]) -> str:
+    stripped = str(text or "").strip()
+    signatures = _table_cell_text_signatures(rows)
+    if not stripped or not signatures:
+        return stripped
+    normalized, offsets = _table_cell_text_signature_with_offsets(stripped)
+    if len(normalized) < 12 or len(offsets) != len(normalized):
+        return stripped
+    for normalized_index in range(1, len(normalized)):
+        prefix = normalized[:normalized_index]
+        if not _text_covered_by_table_cell_signatures(prefix, signatures):
+            continue
+        suffix = stripped[offsets[normalized_index] :].lstrip()
+        if suffix and _starts_like_tail_note_text(suffix):
+            return suffix
+    return stripped
 
 
 def _table_tail_notes_by_table_id(ordered_items: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], set[str]]:
@@ -1486,7 +1576,9 @@ def _table_tail_notes_by_table_id(ordered_items: list[dict[str, Any]]) -> tuple[
             continue
         if not _looks_like_tail_note_text(str(item.get("text") or "")):
             continue
-        notes_by_table_id[table_id] = item
+        note_item = {**item}
+        note_item["text"] = _trim_repeated_table_prefix_from_tail_note(str(item.get("text") or ""), _table_rows_for_signature(last_table))
+        notes_by_table_id[table_id] = note_item
         consumed_note_ids.add(_material_item_identity(item))
     return notes_by_table_id, consumed_note_ids
 
@@ -1564,6 +1656,11 @@ def _table_effective_bounds_map(
             continue
         page_no = int(table.get("page_no") or 0)
         table_bbox = table.get("table_region_bbox") or table.get("bbox") or []
+        table_region_top: float | None = None
+        table_region_bottom: float | None = None
+        if isinstance(table_bbox, list) and len(table_bbox) >= 4:
+            table_region_top = float(table_bbox[1])
+            table_region_bottom = float(table_bbox[3])
         matched_tops: list[float] = []
         matched_bottoms: list[float] = []
         for source in text_sources:
@@ -1582,10 +1679,16 @@ def _table_effective_bounds_map(
                     continue
             top_y = source.get("top_y")
             if top_y is not None:
-                matched_tops.append(float(top_y))
+                top_value = float(top_y)
+                if table_region_top is not None:
+                    top_value = max(top_value, table_region_top)
+                matched_tops.append(top_value)
             bottom_y = source.get("bottom_y")
             if bottom_y is not None:
-                matched_bottoms.append(float(bottom_y))
+                bottom_value = float(bottom_y)
+                if table_region_bottom is not None:
+                    bottom_value = min(bottom_value, table_region_bottom)
+                matched_bottoms.append(bottom_value)
         if matched_tops:
             effective_bounds[table_id] = {
                 "top": min(matched_tops),
