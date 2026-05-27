@@ -4006,6 +4006,116 @@ def test_package_module_artifacts_skips_stream_images_inside_table_regions(tmp_p
     assert all(item.get("item_id") != "pp-image-in-table" for item in ordered["items"])
 
 
+def test_package_module_artifacts_skips_repeated_header_footer_images(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 1、测试章节",
+            1,
+            2,
+            "1、测试章节",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="1、测试章节", bbox=[20, 100, 220, 120], block_no=1),
+        PdfTextBlock(block_id="body", page_no=1, text="章节正文", bbox=[20, 140, 220, 160], block_no=2),
+    ]
+    images = [
+        {"image_id": "header-1", "page_no": 1, "xref": 101, "width": 260, "height": 80, "rect": [24, 18, 154, 58], "ext": "png"},
+        {"image_id": "header-2", "page_no": 2, "xref": 102, "width": 260, "height": 80, "rect": [24, 18, 154, 58], "ext": "png"},
+        {"image_id": "footer-1", "page_no": 1, "xref": 201, "width": 300, "height": 60, "rect": [420, 790, 560, 822], "ext": "png"},
+        {"image_id": "footer-2", "page_no": 2, "xref": 202, "width": 300, "height": 60, "rect": [420, 790, 560, 822], "ext": "png"},
+        {"image_id": "body-img", "page_no": 1, "xref": 301, "width": 900, "height": 500, "rect": [80, 220, 420, 430], "ext": "png"},
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"fake-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "1、测试章节"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert "![测试章节_图1](image_items/测试章节_图1.png)" in material_md
+    assert "header" not in material_md
+    assert "footer" not in material_md
+    assert [item.get("image_id") for item in ordered["items"] if item.get("item_type") == "image"] == ["body-img"]
+
+
+def test_package_module_artifacts_skips_stream_header_footer_images(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 1、测试章节",
+            1,
+            1,
+            "1、测试章节",
+        )
+    ]
+    body_image_path = tmp_path / "body.png"
+    body_image_path.write_bytes(b"body")
+    header_path = tmp_path / "header.png"
+    header_path.write_bytes(b"header")
+    footer_path = tmp_path / "footer.png"
+    footer_path.write_bytes(b"footer")
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="1、测试章节", bbox=[20, 100, 220, 120], block_no=1),
+    ]
+    page_material_items = [
+        PageMaterialItem(
+            item_id="stream-header",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=18,
+            bbox=[24, 18, 154, 58],
+            file_path=str(header_path),
+            payload={"layout_label": "header_image", "page_width": 595, "page_height": 842},
+        ),
+        PageMaterialItem(
+            item_id="stream-footer",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=790,
+            bbox=[420, 790, 560, 822],
+            file_path=str(footer_path),
+            payload={"layout_label": "footer_image", "page_width": 595, "page_height": 842},
+        ),
+        PageMaterialItem(
+            item_id="stream-body",
+            item_type="image",
+            source_type="pp_structure_image_region",
+            page_no=1,
+            top_y=220,
+            bbox=[80, 220, 420, 430],
+            file_path=str(body_image_path),
+            payload={"layout_label": "image", "page_width": 595, "page_height": 842},
+        ),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        page_material_items=page_material_items,
+    )
+
+    material_dir = tmp_path / "modules" / "1、测试章节"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))
+
+    assert "body.png" in material_md
+    assert "header.png" not in material_md
+    assert "footer.png" not in material_md
+    assert [item.get("item_id") for item in ordered["items"] if item.get("item_type") == "image"] == ["stream-body"]
+
+
 def test_fu_lines_do_not_create_submaterials_or_drop_pp_structure_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(

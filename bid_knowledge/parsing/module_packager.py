@@ -714,6 +714,8 @@ def _ordered_material_items(
             continue
         if _is_decorative_page_material_text(stream_item, decorative_text):
             continue
+        if _is_decorative_page_material_image(stream_item):
+            continue
         if item_type == "text" and _page_material_text_already_ordered(stream_item, seen_text_block_ids, seen_text_signatures):
             continue
         bbox = stream_item.get("bbox") or []
@@ -2923,37 +2925,80 @@ def _filter_items_by_layout_masks(
 def _decorative_image_signatures(images: list[dict[str, Any]]) -> set[tuple[Any, ...]]:
     counts: dict[tuple[Any, ...], int] = {}
     for image in images:
-        rect = image.get("rect") or [0, 0, 0, 0]
-        left = float(rect[0]) if len(rect) >= 1 else 0.0
-        top = float(rect[1]) if len(rect) >= 2 else 0.0
-        signature = (
-            image.get("xref"),
-            round(left, 1),
-            round(top, 1),
-            int(image.get("width") or 0),
-            int(image.get("height") or 0),
-        )
-        counts[signature] = counts.get(signature, 0) + 1
+        for signature in _decorative_image_signature_candidates(image):
+            counts[signature] = counts.get(signature, 0) + 1
 
     decorative: set[tuple[Any, ...]] = set()
     for signature, count in counts.items():
-        _xref, left, top, width, height = signature
-        is_small_header = left <= 120 and top <= 80 and width <= 200 and height <= 120
-        if is_small_header and count >= 10:
+        kind = signature[0]
+        if kind == "xref":
+            _kind, _xref, left, top, width, height = signature
+            is_small_header = left <= 120 and top <= 80 and width <= 200 and height <= 120
+            if is_small_header and count >= 10:
+                decorative.add(signature)
+        elif kind == "margin" and count >= 2:
             decorative.add(signature)
     return decorative
 
 
+def _decorative_image_signature_candidates(image: dict[str, Any]) -> list[tuple[Any, ...]]:
+    rect = image.get("rect") or image.get("bbox") or [0, 0, 0, 0]
+    left = float(rect[0]) if len(rect) >= 1 else 0.0
+    top = float(rect[1]) if len(rect) >= 2 else 0.0
+    width = int(image.get("width") or 0)
+    height = int(image.get("height") or 0)
+    signatures: list[tuple[Any, ...]] = [
+        ("xref", image.get("xref"), round(left, 1), round(top, 1), width, height),
+    ]
+    if _looks_like_page_margin_image(image):
+        rect_width, rect_height = _image_region_size(image)
+        signatures.append(
+            (
+                "margin",
+                round(left, 1),
+                round(top, 1),
+                round(rect_width, 1),
+                round(rect_height, 1),
+                width,
+                height,
+            )
+        )
+    return signatures
+
+
+def _looks_like_page_margin_image(image: dict[str, Any]) -> bool:
+    bbox = image.get("rect") or image.get("bbox") or []
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return False
+    width, height = _image_region_size(image)
+    if width <= 0 or height <= 0:
+        return False
+    top = float(bbox[1])
+    bottom = float(bbox[3])
+    _page_width, page_height = _image_region_page_size(image)
+    in_header = top <= 80
+    in_footer = bottom >= (page_height * 0.94 if page_height else 760)
+    if not (in_header or in_footer):
+        return False
+    intrinsic_width = int(image.get("width") or 0)
+    intrinsic_height = int(image.get("height") or 0)
+    compact_on_page = height <= 90 and width <= 380
+    compact_intrinsic = intrinsic_width <= 500 and intrinsic_height <= 220 and height <= 110
+    return compact_on_page or compact_intrinsic
+
+
+def _is_decorative_page_material_image(item: dict[str, Any]) -> bool:
+    if str(item.get("item_type") or item.get("type") or "") != "image":
+        return False
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    layout_label = str(payload.get("layout_label") or "")
+    if layout_label in {"header", "header_image", "footer", "footer_image", "number", "footnote"}:
+        return True
+    return False
+
+
 def _is_decorative_image(image: dict[str, Any], signatures: set[tuple[Any, ...]]) -> bool:
-    rect = image.get("rect") or [0, 0, 0, 0]
-    signature = (
-        image.get("xref"),
-        round(float(rect[0]) if len(rect) >= 1 else 0.0, 1),
-        round(float(rect[1]) if len(rect) >= 2 else 0.0, 1),
-        int(image.get("width") or 0),
-        int(image.get("height") or 0),
-    )
-    return signature in signatures
+    return any(signature in signatures for signature in _decorative_image_signature_candidates(image))
 
 
 def _is_tiny_artifact_image(image: dict[str, Any]) -> bool:
