@@ -984,7 +984,7 @@ def _looks_like_form_field_line(text: str) -> bool:
         return False
     return bool(
         re.match(
-            r"^(项目名称|项目编号|招标编号|分标名称|分标编号|包名称|包号|分包名称|分包编号)[：:]",
+            r"^(项目名称|项目编号|项目单位|招标编号|分标名称|分标编号|包名称|包号|分包名称|分包编号)[：:]",
             compact,
         )
     )
@@ -1200,13 +1200,26 @@ def _render_table_markdown(rows: list[list[Any]], image_refs: dict[tuple[int, in
 
 
 def _table_rows_for_material_markdown(rows: list[list[Any]]) -> list[list[Any]]:
-    rows = _table_rows_without_tail_notes(rows)
-    return _table_rows_without_leading_metadata(rows)
+    _metadata_rows, table_rows = _split_table_leading_metadata(rows)
+    return table_rows
 
 
 def _table_rows_without_leading_metadata(rows: list[list[Any]]) -> list[list[Any]]:
+    _metadata_rows, table_rows = _split_table_leading_metadata(rows)
+    return table_rows
+
+
+def _split_table_leading_metadata(rows: list[list[Any]]) -> tuple[list[list[Any]], list[list[Any]]]:
+    rows = _table_rows_without_tail_notes(rows)
     if not rows:
-        return rows
+        return [], rows
+    metadata_count = _leading_metadata_row_count(rows)
+    if not metadata_count:
+        return [], rows
+    return rows[:metadata_count], rows[metadata_count:]
+
+
+def _leading_metadata_row_count(rows: list[list[Any]]) -> int:
     metadata_count = 0
     for row in rows:
         if _looks_like_leading_table_metadata_row(row):
@@ -1214,11 +1227,25 @@ def _table_rows_without_leading_metadata(rows: list[list[Any]]) -> list[list[Any
             continue
         break
     if not metadata_count or metadata_count >= len(rows):
-        return rows
+        return 0
     remaining = rows[metadata_count:]
     if not _looks_like_structured_table_header(remaining[0]):
-        return rows
-    return remaining
+        return 0
+    return metadata_count
+
+
+def _table_leading_metadata_markdown_lines(rows: list[list[Any]], existing_lines: list[str]) -> list[str]:
+    emitted: list[str] = []
+    existing_signatures = {_text_signature(line) for line in existing_lines if line.strip()}
+    for row in rows:
+        for cell in row:
+            text = str(cell or "").strip()
+            signature = _text_signature(text)
+            if not text or not signature or signature in existing_signatures:
+                continue
+            emitted.extend([text, ""])
+            existing_signatures.add(signature)
+    return emitted
 
 
 def _looks_like_leading_table_metadata_row(row: list[Any]) -> bool:
@@ -1615,7 +1642,8 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-                rows = _table_rows_for_material_markdown(rows)
+                metadata_rows, rows = _split_table_leading_metadata(rows)
+                lines.extend(_table_leading_metadata_markdown_lines(metadata_rows, lines))
                 rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
                 image_refs = {
                     position: _table_markdown_image_ref(str(payload_ref), image_ref)
@@ -1754,7 +1782,8 @@ def _render_material_items_markdown_lines(
                 continue
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-            rows = _table_rows_for_material_markdown(rows)
+            metadata_rows, rows = _split_table_leading_metadata(rows)
+            lines.extend(_table_leading_metadata_markdown_lines(metadata_rows, lines))
             rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
             table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
@@ -2984,7 +3013,8 @@ def _looks_like_page_margin_image(image: dict[str, Any]) -> bool:
     intrinsic_height = int(image.get("height") or 0)
     compact_on_page = height <= 90 and width <= 380
     compact_intrinsic = intrinsic_width <= 500 and intrinsic_height <= 220 and height <= 110
-    return compact_on_page or compact_intrinsic
+    wide_margin_band = width >= 500 and height <= 120 and (top <= 20 or in_footer)
+    return compact_on_page or compact_intrinsic or wide_margin_band
 
 
 def _is_decorative_page_material_image(item: dict[str, Any]) -> bool:

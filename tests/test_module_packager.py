@@ -1978,6 +1978,59 @@ def test_package_module_artifacts_keeps_leading_form_fields_out_of_table_markdow
     assert material_md.index("招标编号：2224AA") < material_md.index("| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |")
 
 
+def test_package_module_artifacts_renders_table_leading_metadata_as_body_text(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="header", page_no=1, text="序号\n名称\n单位\n招标人要求值\n投标人保证值", bbox=[76, 170, 466, 184], block_no=2),
+        PdfTextBlock(block_id="row", page_no=1, text="1\n绝缘件公称直径\nmm\n255\n255", bbox=[76, 194, 466, 208], block_no=3),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="tech-table",
+            page_no=1,
+            rows=[
+                ["招标编号：2224AA", "", "分标名称：交流盘形悬式瓷绝缘子", "", ""],
+                ["分标编号：2224AA-1405025-3401", "", "包名称：包 1-包 6", "包号：包 1-包 6", ""],
+                ["项目单位：国网辽宁省电力有限公司", "", "项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目", "", ""],
+                ["序号", "名称", "单位", "招标人要求值", "投标人保证值"],
+                ["1", "绝缘件公称直径", "mm", "255", "255"],
+            ],
+            bbox=[35, 104, 558, 300],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
+
+    assert "招标编号：2224AA" in material_md
+    assert "分标名称：交流盘形悬式瓷绝缘子" in material_md
+    assert "分标编号：2224AA-1405025-3401" in material_md
+    assert "包名称：包 1-包 6" in material_md
+    assert "包号：包 1-包 6" in material_md
+    assert "项目单位：国网辽宁省电力有限公司" in material_md
+    assert "项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目" in material_md
+    assert "| 招标编号：2224AA |" not in material_md
+    assert "| 项目单位：国网辽宁省电力有限公司 |" not in material_md
+    assert material_md.index("项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目") < material_md.index(
+        "| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |"
+    )
+
+
 def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -4022,6 +4075,8 @@ def test_package_module_artifacts_skips_repeated_header_footer_images(tmp_path: 
     images = [
         {"image_id": "header-1", "page_no": 1, "xref": 101, "width": 260, "height": 80, "rect": [24, 18, 154, 58], "ext": "png"},
         {"image_id": "header-2", "page_no": 2, "xref": 102, "width": 260, "height": 80, "rect": [24, 18, 154, 58], "ext": "png"},
+        {"image_id": "wide-header-1", "page_no": 1, "xref": 111, "width": 1100, "height": 180, "rect": [0, 0, 595, 92], "ext": "png"},
+        {"image_id": "wide-header-2", "page_no": 2, "xref": 112, "width": 1100, "height": 180, "rect": [0, 0, 595, 92], "ext": "png"},
         {"image_id": "footer-1", "page_no": 1, "xref": 201, "width": 300, "height": 60, "rect": [420, 790, 560, 822], "ext": "png"},
         {"image_id": "footer-2", "page_no": 2, "xref": 202, "width": 300, "height": 60, "rect": [420, 790, 560, 822], "ext": "png"},
         {"image_id": "body-img", "page_no": 1, "xref": 301, "width": 900, "height": 500, "rect": [80, 220, 420, 430], "ext": "png"},
