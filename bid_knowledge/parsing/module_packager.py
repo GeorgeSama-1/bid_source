@@ -1200,13 +1200,11 @@ def _render_table_markdown(rows: list[list[Any]], image_refs: dict[tuple[int, in
 
 
 def _table_rows_for_material_markdown(rows: list[list[Any]]) -> list[list[Any]]:
-    _metadata_rows, table_rows = _split_table_leading_metadata(rows)
-    return table_rows
+    return _table_rows_without_tail_notes(rows)
 
 
 def _table_rows_without_leading_metadata(rows: list[list[Any]]) -> list[list[Any]]:
-    _metadata_rows, table_rows = _split_table_leading_metadata(rows)
-    return table_rows
+    return _table_rows_without_tail_notes(rows)
 
 
 def _split_table_leading_metadata(rows: list[list[Any]]) -> tuple[list[list[Any]], list[list[Any]]]:
@@ -1246,6 +1244,21 @@ def _table_leading_metadata_markdown_lines(rows: list[list[Any]], existing_lines
             emitted.extend([text, ""])
             existing_signatures.add(signature)
     return emitted
+
+
+def _flush_text_markdown_lines_before_table(
+    buffer: list[dict[str, Any]],
+    seen_texts: set[str],
+    table_cell_signatures: set[str],
+) -> list[str]:
+    if not table_cell_signatures:
+        return _flush_text_markdown_lines(buffer, seen_texts)
+    filtered = [
+        item
+        for item in buffer
+        if not _text_repeated_from_table_cells(str(item.get("text") or ""), table_cell_signatures)
+    ]
+    return _flush_text_markdown_lines(filtered, seen_texts)
 
 
 def _looks_like_leading_table_metadata_row(row: list[Any]) -> bool:
@@ -1635,15 +1648,14 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
             if image_path:
                 lines.extend([f"![{title}]({image_path})", ""])
         elif item_type == "table":
-            lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
-            text_buffer = []
             payload_ref = item.get("payload_ref")
             if payload_ref:
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-                metadata_rows, rows = _split_table_leading_metadata(rows)
-                lines.extend(_table_leading_metadata_markdown_lines(metadata_rows, lines))
+                rows = _table_rows_for_material_markdown(rows)
+                lines.extend(_flush_text_markdown_lines_before_table(text_buffer, seen_texts, _table_cell_text_signatures(rows)))
+                text_buffer = []
                 rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
                 image_refs = {
                     position: _table_markdown_image_ref(str(payload_ref), image_ref)
@@ -1776,14 +1788,14 @@ def _render_material_items_markdown_lines(
                 lines.extend([f"![{title}]({image_path})", ""])
                 seen_item_keys.add(item_key)
         elif item_type == "table":
-            flush_text()
             payload_ref = item.get("payload_ref")
             if not payload_ref:
                 continue
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-            metadata_rows, rows = _split_table_leading_metadata(rows)
-            lines.extend(_table_leading_metadata_markdown_lines(metadata_rows, lines))
+            rows = _table_rows_for_material_markdown(rows)
+            lines.extend(_flush_text_markdown_lines_before_table(text_buffer, seen_texts, _table_cell_text_signatures(rows)))
+            text_buffer = []
             rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
             table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""

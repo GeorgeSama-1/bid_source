@@ -1930,7 +1930,7 @@ def test_package_module_artifacts_keeps_intro_text_above_overexpanded_table_bbox
     assert [item["item_type"] for item in ordered[:4]] == ["text", "text", "text", "table"]
 
 
-def test_package_module_artifacts_keeps_leading_form_fields_out_of_table_markdown(tmp_path: Path) -> None:
+def test_package_module_artifacts_keeps_ocr_table_metadata_rows_and_skips_duplicate_text(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "技术文件 / 技术特性参数表",
@@ -1973,12 +1973,13 @@ def test_package_module_artifacts_keeps_leading_form_fields_out_of_table_markdow
     assert "项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目" in material_md
     assert "招标编号：2224AA" in material_md
     assert "| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |" in material_md
-    assert "| 项目名称：" not in material_md
-    assert "| 招标编号：" not in material_md
-    assert material_md.index("招标编号：2224AA") < material_md.index("| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |")
+    assert "| 项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目 |  |  |  |  |" in material_md
+    assert "| 招标编号：2224AA |  |  |  |  |" in material_md
+    assert material_md.count("项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目") == 1
+    assert material_md.count("招标编号：2224AA") == 1
 
 
-def test_package_module_artifacts_renders_table_leading_metadata_as_body_text(tmp_path: Path) -> None:
+def test_package_module_artifacts_keeps_table_leading_metadata_in_table_when_not_duplicated(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "技术文件 / 技术特性参数表",
@@ -2017,18 +2018,59 @@ def test_package_module_artifacts_renders_table_leading_metadata_as_body_text(tm
 
     material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
 
-    assert "招标编号：2224AA" in material_md
-    assert "分标名称：交流盘形悬式瓷绝缘子" in material_md
-    assert "分标编号：2224AA-1405025-3401" in material_md
-    assert "包名称：包 1-包 6" in material_md
-    assert "包号：包 1-包 6" in material_md
-    assert "项目单位：国网辽宁省电力有限公司" in material_md
-    assert "项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目" in material_md
-    assert "| 招标编号：2224AA |" not in material_md
-    assert "| 项目单位：国网辽宁省电力有限公司 |" not in material_md
-    assert material_md.index("项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目") < material_md.index(
-        "| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |"
+    assert "| 招标编号：2224AA |  | 分标名称：交流盘形悬式瓷绝缘子 |  |  |" in material_md
+    assert "| 分标编号：2224AA-1405025-3401 |  | 包名称：包 1-包 6 | 包号：包 1-包 6 |  |" in material_md
+    assert "| 项目单位：国网辽宁省电力有限公司 |  | 项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目 |  |  |" in material_md
+    assert material_md.index("| 项目单位：国网辽宁省电力有限公司") < material_md.index("| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |")
+
+
+def test_package_module_artifacts_skips_text_repeated_by_following_table_metadata(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    duplicate_text = (
+        "项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目\n"
+        "招标编号：2224AA                 分标名称：交流盘形悬式瓷绝缘子\n"
+        "分标编号：2224AA-1405025-3401     包名称：包1-包6          包号：包1-包6"
     )
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="duplicate-meta", page_no=1, text=duplicate_text, bbox=[20, 100, 560, 150], block_no=2),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="tech-table",
+            page_no=1,
+            rows=[
+                ["招标编号：2224AA", "", "分标名称：交流盘形悬式瓷绝缘子", "", ""],
+                ["分标编号：2224AA-1405025-3401", "", "包名称：包1-包6", "包号：包1-包6", ""],
+                ["项目单位：国网辽宁省电力有限公司", "", "项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目", "", ""],
+                ["序号", "名称", "单位", "招标人要求值", "投标人保证值"],
+                ["1", "绝缘件公称直径", "mm", "255", "255"],
+            ],
+            bbox=[35, 160, 558, 300],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
+
+    assert duplicate_text not in material_md
+    assert material_md.count("招标编号：2224AA") == 1
+    assert material_md.count("分标编号：2224AA-1405025-3401") == 1
+    assert "| 项目单位：国网辽宁省电力有限公司 |  | 项目名称：国网辽宁省电力有限公司2024 年第一次配网物资协议库存招标采购项目 |  |  |" in material_md
 
 
 def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(tmp_path: Path) -> None:
