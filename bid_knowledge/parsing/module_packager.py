@@ -988,6 +988,18 @@ def _looks_like_form_field_line(text: str) -> bool:
     )
 
 
+def _looks_like_toc_entry_text(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    compact = re.sub(r"\s+", "", stripped)
+    if not re.match(r"^\d+(?:\.\d+)*[、.．]", compact):
+        return False
+    if re.search(r"[.．·•…]{3,}\d{1,5}$", compact):
+        return True
+    return bool(re.search(r"\d{1,5}$", compact) and re.search(r"[.．·•…]{3,}", compact))
+
+
 def _looks_like_table_caption(text: str) -> bool:
     stripped = str(text or "").strip()
     if not stripped:
@@ -1185,6 +1197,58 @@ def _render_table_markdown(rows: list[list[Any]], image_refs: dict[tuple[int, in
     return "\n".join(lines)
 
 
+def _table_rows_for_material_markdown(rows: list[list[Any]]) -> list[list[Any]]:
+    rows = _table_rows_without_tail_notes(rows)
+    return _table_rows_without_leading_metadata(rows)
+
+
+def _table_rows_without_leading_metadata(rows: list[list[Any]]) -> list[list[Any]]:
+    if not rows:
+        return rows
+    metadata_count = 0
+    for row in rows:
+        if _looks_like_leading_table_metadata_row(row):
+            metadata_count += 1
+            continue
+        break
+    if not metadata_count or metadata_count >= len(rows):
+        return rows
+    remaining = rows[metadata_count:]
+    if not _looks_like_structured_table_header(remaining[0]):
+        return rows
+    return remaining
+
+
+def _looks_like_leading_table_metadata_row(row: list[Any]) -> bool:
+    cells = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
+    if not cells:
+        return False
+    return all(_looks_like_form_field_line(cell) for cell in cells)
+
+
+def _looks_like_structured_table_header(row: list[Any]) -> bool:
+    cells = [re.sub(r"\s+", "", str(cell or "")) for cell in row if str(cell or "").strip()]
+    if len(cells) < 2:
+        return False
+    header_words = {
+        "序号",
+        "名称",
+        "项目",
+        "单位",
+        "数量",
+        "型号",
+        "规格",
+        "参数",
+        "招标人要求值",
+        "投标人保证值",
+        "层级",
+        "职务",
+        "姓名",
+        "备注",
+    }
+    return sum(1 for cell in cells if cell in header_words or any(word in cell for word in header_words)) >= 2
+
+
 def _should_inline_table_markdown(rows: list[list[Any]]) -> bool:
     if not rows:
         return False
@@ -1375,10 +1439,10 @@ def _material_item_identity(item: dict[str, Any]) -> str:
 def _table_rows_for_signature(table: dict[str, Any]) -> list[list[Any]]:
     rows = table.get("rows")
     if isinstance(rows, list):
-        return _table_rows_without_tail_notes(rows)
+        return _table_rows_for_material_markdown(rows)
     table_model = table.get("table_model") if isinstance(table.get("table_model"), dict) else {}
     model_rows = table_model.get("rows") if isinstance(table_model, dict) else None
-    return _table_rows_without_tail_notes(model_rows) if isinstance(model_rows, list) else []
+    return _table_rows_for_material_markdown(model_rows) if isinstance(model_rows, list) else []
 
 
 def _table_cell_signature_map(table_items: list[dict[str, Any]]) -> dict[str, str]:
@@ -1549,7 +1613,7 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 title = str(item.get("table_title") or item.get("nearest_heading") or item.get("table_id") or "表格").strip()
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-                rows = _table_rows_without_tail_notes(rows)
+                rows = _table_rows_for_material_markdown(rows)
                 rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
                 image_refs = {
                     position: _table_markdown_image_ref(str(payload_ref), image_ref)
@@ -1688,7 +1752,7 @@ def _render_material_items_markdown_lines(
                 continue
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
-            rows = _table_rows_without_tail_notes(rows)
+            rows = _table_rows_for_material_markdown(rows)
             rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
             table_markdown = _render_table_markdown(rows, image_refs) if _should_inline_table_markdown(rows) else ""
@@ -3146,6 +3210,8 @@ def _find_parent_preface_scope(
     exact_title_blocks: list[PdfTextBlock] = []
     fuzzy_title_blocks: list[PdfTextBlock] = []
     for block in blocks:
+        if _looks_like_toc_entry_text(block.text):
+            continue
         if block.page_no > child_start_page:
             continue
         top_y = _block_top_y(block)
@@ -3475,6 +3541,8 @@ def _candidate_precise_scope(section_candidates: list[ReusableCandidate]) -> dic
 
 
 def _block_matches_section_heading(section_path: str, block: PdfTextBlock) -> bool:
+    if _looks_like_toc_entry_text(block.text):
+        return False
     parts = _section_parts(section_path)
     if not parts:
         return False

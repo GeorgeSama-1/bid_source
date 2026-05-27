@@ -1930,6 +1930,54 @@ def test_package_module_artifacts_keeps_intro_text_above_overexpanded_table_bbox
     assert [item["item_type"] for item in ordered[:4]] == ["text", "text", "text", "table"]
 
 
+def test_package_module_artifacts_keeps_leading_form_fields_out_of_table_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="project", page_no=1, text="项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目", bbox=[72, 112, 500, 124], block_no=2),
+        PdfTextBlock(block_id="bid", page_no=1, text="招标编号：2224AA", bbox=[72, 132, 220, 144], block_no=3),
+        PdfTextBlock(block_id="header", page_no=1, text="序号\n名称\n单位\n招标人要求值\n投标人保证值", bbox=[76, 170, 466, 184], block_no=4),
+        PdfTextBlock(block_id="row", page_no=1, text="1\n绝缘件公称直径\nmm\n255\n255", bbox=[76, 194, 466, 208], block_no=5),
+    ]
+    tables = [
+        ParsedTable(
+            table_id="tech-table",
+            page_no=1,
+            rows=[
+                ["项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目", "", "", "", ""],
+                ["招标编号：2224AA", "", "", "", ""],
+                ["序号", "名称", "单位", "招标人要求值", "投标人保证值"],
+                ["1", "绝缘件公称直径", "mm", "255", "255"],
+            ],
+            bbox=[35, 104, 558, 300],
+        )
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=tables,
+        images=[],
+        out_dir=tmp_path,
+    )
+
+    material_md = (tmp_path / "modules" / "技术特性参数表" / "material.md").read_text(encoding="utf-8")
+
+    assert "项目名称：国网辽宁省电力有限公司 2024 年第一次配网物资协议库存招标采购项目" in material_md
+    assert "招标编号：2224AA" in material_md
+    assert "| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |" in material_md
+    assert "| 项目名称：" not in material_md
+    assert "| 招标编号：" not in material_md
+    assert material_md.index("招标编号：2224AA") < material_md.index("| 序号 | 名称 | 单位 | 招标人要求值 | 投标人保证值 |")
+
+
 def test_package_module_artifacts_keeps_tail_text_below_overexpanded_table_bbox(tmp_path: Path) -> None:
     candidates = [
         _candidate(
@@ -2324,6 +2372,58 @@ def test_package_module_artifacts_keeps_all_child_links_when_parent_has_preface(
     assert "投标人近三年财务状况如下。" in parent_md
     assert "- [3.7.1、 2022 年度财务审计报告](3.7.1、 2022 年度财务审计报告/material.md)" in parent_md
     assert "- [3.7.2、 2023 年度财务审计报告](3.7.2、 2023 年度财务审计报告/material.md)" in parent_md
+
+
+def test_package_module_artifacts_does_not_use_toc_entry_as_parent_preface_start(tmp_path: Path) -> None:
+    child_path = "PDF / 2、 专项投标文件 / 2.9、 生产场地、生产能力及剩余产能列表、厂房面积 / 2.9.1、 房产证明材料"
+    candidates = [
+        _candidate(
+            child_path,
+            168,
+            169,
+            "2.9.1、 房产证明材料",
+        )
+    ]
+    candidates[0].material_evidence = {"source": "pdf_toc_leaf", "start_y": 120.0, "end_y": None, "start_block_id": "child-title"}
+    blocks = [
+        PdfTextBlock(
+            block_id="toc-29",
+            page_no=5,
+            text="2.9、生产场地、生产能力及剩余产能列表、厂房面积 .......................................................................... 167",
+            bbox=[0, 120, 900, 140],
+            block_no=1,
+        ),
+        PdfTextBlock(
+            block_id="toc-210",
+            page_no=5,
+            text="2.10、生产装备 ....................................................................................... 185",
+            bbox=[0, 145, 900, 165],
+            block_no=2,
+        ),
+        PdfTextBlock(block_id="unrelated-title", page_no=20, text="1、技术偏差表", bbox=[0, 80, 200, 100], block_no=3),
+        PdfTextBlock(block_id="unrelated-body", page_no=20, text="技术偏差表正文", bbox=[0, 120, 400, 140], block_no=4),
+        PdfTextBlock(block_id="child-title", page_no=168, text="2.9.1、房产证明材料", bbox=[0, 120, 300, 140], block_no=5),
+        PdfTextBlock(block_id="child-body", page_no=168, text="房产证明正文", bbox=[0, 160, 400, 180], block_no=6),
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=[],
+        out_dir=tmp_path,
+        top_level_modules=["2、 专项投标文件"],
+        planned_section_paths=[child_path],
+    )
+
+    parent_dir = tmp_path / "modules" / "2、 专项投标文件" / "2.9、 生产场地、生产能力及剩余产能列表、厂房面积"
+    parent_md = (parent_dir / "material.md").read_text(encoding="utf-8")
+    child_md = (parent_dir / "2.9.1、 房产证明材料" / "material.md").read_text(encoding="utf-8")
+
+    assert "2.10、生产装备" not in parent_md
+    assert "技术偏差表正文" not in parent_md
+    assert "- [2.9.1、 房产证明材料](2.9.1、 房产证明材料/material.md)" in parent_md
+    assert "房产证明正文" in child_md
 
 
 def test_package_module_artifacts_excludes_child_scope_from_parent_material_body(tmp_path: Path) -> None:
