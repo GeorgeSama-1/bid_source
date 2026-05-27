@@ -789,6 +789,8 @@ def _table_text_role_for_block(
         }
     cell_table_id = _matching_table_cell_text_id(block.text, table_cell_signatures)
     if cell_table_id:
+        if not _bbox_can_match_table_cell_region(int(block.page_no), block.bbox, table_regions, cell_table_id):
+            return {"material_role": "body_text"}
         return {
             "material_role": "table_text",
             "suppressed_by_table_id": cell_table_id,
@@ -822,6 +824,13 @@ def _table_text_role_for_stream_item(
         }
     cell_table_id = _matching_table_cell_text_id(text, table_cell_signatures)
     if cell_table_id:
+        if not _bbox_can_match_table_cell_region(
+            int(stream_item.get("page_no") or 0),
+            stream_item.get("bbox") or [],
+            table_regions,
+            cell_table_id,
+        ):
+            return {}
         return {
             "material_role": "table_text",
             "suppressed_by_table_id": cell_table_id,
@@ -973,6 +982,36 @@ def _matching_table_region_id(page_no: int, bbox: Any, table_regions: dict[int, 
         if inside_by_center or inside_by_overlap:
             return str(region.get("table_id") or "")
     return ""
+
+
+def _bbox_can_match_table_cell_region(page_no: int, bbox: Any, table_regions: dict[int, list[dict[str, Any]]], table_id: str) -> bool:
+    if not isinstance(bbox, list) or len(bbox) < 4 or not table_id:
+        return False
+    candidate_regions = [
+        region
+        for region in table_regions.get(int(page_no), [])
+        if str(region.get("table_id") or "") == str(table_id)
+    ]
+    precise_regions = [region for region in candidate_regions if region.get("bbox_key") == "table_region_bbox"]
+    regions = precise_regions or candidate_regions
+    if not regions:
+        return False
+    block_bbox = [float(value) for value in bbox[:4]]
+    x0, y0, x1, y1 = block_bbox
+    center_x = (x0 + x1) / 2
+    center_y = (y0 + y1) / 2
+    region_top = min(float(region["bbox"][1]) for region in regions)
+    if y1 < region_top - 2.0:
+        return False
+    for region in regions:
+        rx0, ry0, rx1, ry1 = region["bbox"]
+        if rx0 <= center_x <= rx1 and ry0 <= center_y <= ry1:
+            return True
+        if _bbox_overlap_ratio(block_bbox, region["bbox"]) > 0:
+            return True
+        if max(x0, rx0) < min(x1, rx1) and y0 >= ry0 - 2.0:
+            return True
+    return False
 
 
 def _looks_like_form_field_line(text: str) -> bool:
@@ -1203,92 +1242,33 @@ def _table_rows_for_material_markdown(rows: list[list[Any]]) -> list[list[Any]]:
     return _table_rows_without_tail_notes(rows)
 
 
-def _table_rows_without_leading_metadata(rows: list[list[Any]]) -> list[list[Any]]:
-    return _table_rows_without_tail_notes(rows)
-
-
-def _split_table_leading_metadata(rows: list[list[Any]]) -> tuple[list[list[Any]], list[list[Any]]]:
-    rows = _table_rows_without_tail_notes(rows)
-    if not rows:
-        return [], rows
-    metadata_count = _leading_metadata_row_count(rows)
-    if not metadata_count:
-        return [], rows
-    return rows[:metadata_count], rows[metadata_count:]
-
-
-def _leading_metadata_row_count(rows: list[list[Any]]) -> int:
-    metadata_count = 0
+def _trim_leading_rows_repeated_by_text_buffer(rows: list[list[Any]], buffer: list[dict[str, Any]]) -> list[list[Any]]:
+    if not rows or not buffer:
+        return rows
+    buffer_signatures = _text_buffer_signatures(buffer)
+    if not buffer_signatures:
+        return rows
+    first_kept = 0
     for row in rows:
-        if _looks_like_leading_table_metadata_row(row):
-            metadata_count += 1
-            continue
-        break
-    if not metadata_count or metadata_count >= len(rows):
-        return 0
-    remaining = rows[metadata_count:]
-    if not _looks_like_structured_table_header(remaining[0]):
-        return 0
-    return metadata_count
+        row_text = "".join(str(cell or "") for cell in row) if isinstance(row, list) else str(row or "")
+        if not _text_repeated_from_table_cells(row_text, buffer_signatures):
+            break
+        first_kept += 1
+    return rows[first_kept:] if first_kept else rows
 
 
-def _table_leading_metadata_markdown_lines(rows: list[list[Any]], existing_lines: list[str]) -> list[str]:
-    emitted: list[str] = []
-    existing_signatures = {_text_signature(line) for line in existing_lines if line.strip()}
-    for row in rows:
-        for cell in row:
-            text = str(cell or "").strip()
-            signature = _text_signature(text)
-            if not text or not signature or signature in existing_signatures:
-                continue
-            emitted.extend([text, ""])
-            existing_signatures.add(signature)
-    return emitted
-
-
-def _flush_text_markdown_lines_before_table(
-    buffer: list[dict[str, Any]],
-    seen_texts: set[str],
-    table_cell_signatures: set[str],
-) -> list[str]:
-    if not table_cell_signatures:
-        return _flush_text_markdown_lines(buffer, seen_texts)
-    filtered = [
-        item
-        for item in buffer
-        if not _text_repeated_from_table_cells(str(item.get("text") or ""), table_cell_signatures)
-    ]
-    return _flush_text_markdown_lines(filtered, seen_texts)
-
-
-def _looks_like_leading_table_metadata_row(row: list[Any]) -> bool:
-    cells = [str(cell or "").strip() for cell in row if str(cell or "").strip()]
-    if not cells:
-        return False
-    return all(_looks_like_form_field_line(cell) for cell in cells)
-
-
-def _looks_like_structured_table_header(row: list[Any]) -> bool:
-    cells = [re.sub(r"\s+", "", str(cell or "")) for cell in row if str(cell or "").strip()]
-    if len(cells) < 2:
-        return False
-    header_words = {
-        "序号",
-        "名称",
-        "项目",
-        "单位",
-        "数量",
-        "型号",
-        "规格",
-        "参数",
-        "招标人要求值",
-        "投标人保证值",
-        "层级",
-        "职务",
-        "姓名",
-        "备注",
-    }
-    return sum(1 for cell in cells if cell in header_words or any(word in cell for word in header_words)) >= 2
+def _text_buffer_signatures(buffer: list[dict[str, Any]]) -> set[str]:
+    signatures: set[str] = set()
+    combined_text = ""
+    for item in buffer:
+        text = str(item.get("text") or "")
+        signature = _table_cell_text_signature(text)
+        if len(signature) >= 6:
+            signatures.add(signature)
+            combined_text += signature
+    if len(combined_text) >= 6:
+        signatures.add(combined_text)
+    return signatures
 
 
 def _should_inline_table_markdown(rows: list[list[Any]]) -> bool:
@@ -1600,7 +1580,25 @@ def _text_repeated_from_table_cells(text: str, table_cell_signatures: set[str]) 
     for cell_signature in table_cell_signatures:
         if signature == cell_signature or signature in cell_signature or cell_signature in signature:
             return True
-    return False
+    return _text_covered_by_table_cell_signatures(signature, table_cell_signatures)
+
+
+def _text_covered_by_table_cell_signatures(signature: str, table_cell_signatures: set[str]) -> bool:
+    if len(signature) < 12:
+        return False
+    remaining = signature
+    covered = 0
+    for cell_signature in sorted((item for item in table_cell_signatures if len(item) >= 4), key=len, reverse=True):
+        if cell_signature not in remaining:
+            continue
+        count = remaining.count(cell_signature)
+        covered += count * len(cell_signature)
+        remaining = remaining.replace(cell_signature, "")
+    if covered < 12:
+        return False
+    coverage_ratio = covered / max(len(signature), 1)
+    remaining_ratio = len(remaining) / max(len(signature), 1)
+    return coverage_ratio >= 0.6 and remaining_ratio <= 0.4
 
 
 def _text_item_position_signature(item: dict[str, Any]) -> str:
@@ -1654,7 +1652,8 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 table_data = _load_json_if_exists(material_dir, str(payload_ref))
                 rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
                 rows = _table_rows_for_material_markdown(rows)
-                lines.extend(_flush_text_markdown_lines_before_table(text_buffer, seen_texts, _table_cell_text_signatures(rows)))
+                rows = _trim_leading_rows_repeated_by_text_buffer(rows, text_buffer)
+                lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
                 text_buffer = []
                 rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
                 image_refs = {
@@ -1794,7 +1793,8 @@ def _render_material_items_markdown_lines(
             table_data = _load_json_if_exists(material_dir, str(payload_ref))
             rows = table_data.get("rows") if isinstance(table_data.get("rows"), list) else []
             rows = _table_rows_for_material_markdown(rows)
-            lines.extend(_flush_text_markdown_lines_before_table(text_buffer, seen_texts, _table_cell_text_signatures(rows)))
+            rows = _trim_leading_rows_repeated_by_text_buffer(rows, text_buffer)
+            lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
             text_buffer = []
             rows = _append_tail_note_row(rows, tail_notes_by_table_id.get(str(item.get("table_id") or "")))
             image_refs = _full_document_table_image_refs(material_dir, output_dir, str(payload_ref), table_data)
