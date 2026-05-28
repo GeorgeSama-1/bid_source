@@ -3902,6 +3902,98 @@ def test_package_module_artifacts_suppresses_text_inside_exported_image_regions(
     assert "![系统架构图_图1](image_items/系统架构图_图1.png)" in material_md
 
 
+def test_package_module_artifacts_keeps_decorative_image_json_but_skips_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="body", page_no=1, text="正文内容", bbox=[20, 120, 220, 140], block_no=2),
+    ]
+    images = [
+        {
+            "image_id": "stamp-img",
+            "page_no": 1,
+            "xref": 31,
+            "width": 260,
+            "height": 260,
+            "rect": [300, 520, 420, 640],
+            "ext": "png",
+            "image_kind": "seal_or_stamp",
+        }
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"stamp-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "技术特性参数表"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    image_item = json.loads((material_dir / "image_items" / "技术特性参数表_图1.json").read_text(encoding="utf-8"))
+    ordered_image = next(item for item in ordered if item.get("image_id") == "stamp-img")
+
+    assert "正文内容" in material_md
+    assert "![技术特性参数表_图1]" not in material_md
+    assert image_item["image_kind"] == "seal_or_stamp"
+    assert image_item["material_role"] == "decorative_image"
+    assert ordered_image["material_role"] == "decorative_image"
+    assert ordered_image["suppressed_reason"] == "decorative_image"
+
+
+def test_package_module_artifacts_keeps_content_images_in_markdown(tmp_path: Path) -> None:
+    candidates = [
+        _candidate(
+            "技术文件 / 系统架构图",
+            1,
+            1,
+            "系统架构图",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="系统架构图", bbox=[20, 70, 220, 92], block_no=1),
+    ]
+    images = [
+        {
+            "image_id": "content-img",
+            "page_no": 1,
+            "xref": 41,
+            "width": 900,
+            "height": 500,
+            "rect": [80, 180, 500, 430],
+            "ext": "png",
+        }
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (b"content-image", item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "系统架构图"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    ordered_image = next(item for item in ordered if item.get("image_id") == "content-img")
+
+    assert "![系统架构图_图1](image_items/系统架构图_图1.png)" in material_md
+    assert ordered_image["material_role"] == "image"
+    assert ordered_image["image_kind"] == "content_image"
+
+
 def test_package_module_artifacts_suppresses_text_inside_pp_structure_image_regions(tmp_path: Path) -> None:
     pdf_path = _write_demo_pdf(tmp_path / "demo.pdf", page_count=1)
     candidates = [

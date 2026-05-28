@@ -676,6 +676,7 @@ def _ordered_material_items(
     for image in image_items:
         if _bbox_inside_any_table_region(int(image.get("page_no") or 0), image.get("rect") or [], table_regions):
             continue
+        image_role = _image_material_role(image)
         ordered.append(
             MaterialItemRef(
                 type="image",
@@ -692,7 +693,7 @@ def _ordered_material_items(
                 rule_section_path=rule_section_path,
                 material_path=material_path,
                 payload_ref=str(Path(image["json_path"]).relative_to(material_dir)) if image.get("json_path") else None,
-                material_role="image",
+                **image_role,
             ).model_dump(exclude_none=True)
         )
     for submaterial in submaterial_items or []:
@@ -734,7 +735,7 @@ def _ordered_material_items(
             stream_heading = raw_title if raw_title.strip().startswith("附") else str(nearest.get("title") or raw_title)
         material_role = _table_text_role_for_stream_item(stream_item, table_regions, table_cell_signatures, table_effective_bounds) if item_type == "text" else {}
         if not material_role:
-            material_role = {"material_role": "image" if item_type == "image" else "body_text"}
+            material_role = _image_material_role(stream_item) if item_type == "image" else {"material_role": "body_text"}
         if item_type == "text" and material_role.get("material_role") == "body_text":
             material_role = _image_text_role_for_bbox(page_no, bbox, image_regions) or material_role
         ordered.append(
@@ -937,6 +938,48 @@ def _visual_image_regions_by_page(
         if page_no and isinstance(bbox, list) and len(bbox) >= 4 and image_id:
             grouped[page_no].append({"bbox": [float(value) for value in bbox[:4]], "image_id": image_id})
     return grouped
+
+
+def _image_material_role(image: dict[str, Any]) -> dict[str, str]:
+    image_kind = _classify_image_kind(image)
+    if image_kind in {"decorative_image", "seal_or_stamp", "watermark"}:
+        return {
+            "material_role": "decorative_image",
+            "image_kind": image_kind,
+            "suppressed_reason": "decorative_image",
+        }
+    return {"material_role": "image", "image_kind": image_kind}
+
+
+def _classify_image_kind(image: dict[str, Any]) -> str:
+    explicit_kind = str(image.get("image_kind") or image.get("image_role") or image.get("kind") or "").strip().lower()
+    if explicit_kind:
+        if explicit_kind in {"seal", "stamp", "seal_or_stamp", "signature_stamp"}:
+            return "seal_or_stamp"
+        if explicit_kind in {"watermark", "background_watermark"}:
+            return "watermark"
+        if explicit_kind in {"decorative", "decoration", "decorative_image"}:
+            return "decorative_image"
+        if explicit_kind in {"content", "content_image", "figure", "photo", "diagram", "screenshot"}:
+            return "content_image"
+    material_role = str(image.get("material_role") or "").strip().lower()
+    if material_role in {"decorative_image", "image_text"}:
+        return "decorative_image"
+    payload = image.get("payload") if isinstance(image.get("payload"), dict) else {}
+    label_values = [
+        str(payload.get("layout_label") or ""),
+        str(payload.get("image_kind") or ""),
+        str(payload.get("label") or ""),
+        str(image.get("source_type") or ""),
+    ]
+    normalized_labels = {_table_cell_text_signature(value).lower() for value in label_values if value}
+    if normalized_labels & {"seal", "stamp", "sealorstamp", "signaturestamp", "印章", "签章", "公章"}:
+        return "seal_or_stamp"
+    if normalized_labels & {"watermark", "backgroundwatermark", "水印"}:
+        return "watermark"
+    if normalized_labels & {"decorative", "decoration", "decorativeimage", "background"}:
+        return "decorative_image"
+    return "content_image"
 
 
 def _image_text_role_for_bbox(page_no: int, bbox: Any, image_regions: dict[int, list[dict[str, Any]]]) -> dict[str, str]:
@@ -1408,6 +1451,10 @@ def _is_suppressed_material_text(item: dict[str, Any]) -> bool:
     return str(item.get("material_role") or "") in {"table_text", "image_text"}
 
 
+def _is_decorative_material_image(item: dict[str, Any]) -> bool:
+    return str(item.get("material_role") or "") == "decorative_image"
+
+
 def _is_field_label_text(text: str) -> bool:
     stripped = str(text or "").strip()
     return bool(stripped and len(stripped) <= 40 and re.search(r"[：:]\s*$", stripped))
@@ -1779,6 +1826,8 @@ def _write_material_markdown(material_dir: Path, material_title: str, ordered_it
                 continue
             text_buffer.append(item)
         elif item_type == "image":
+            if _is_decorative_material_image(item):
+                continue
             lines.extend(_flush_text_markdown_lines(text_buffer, seen_texts))
             text_buffer = []
             image_path = _relative_markdown_path(material_dir, item.get("file_path"))
@@ -1920,6 +1969,9 @@ def _render_material_items_markdown_lines(
             seen_item_keys.add(item_key)
             text_buffer.append(item)
         elif item_type == "image":
+            if _is_decorative_material_image(item):
+                seen_item_keys.add(item_key)
+                continue
             flush_text()
             image_path = _relative_markdown_path(output_dir, item.get("file_path"))
             title = str(item.get("image_title") or item.get("nearest_heading") or item.get("image_id") or "图片").strip()
@@ -3283,6 +3335,7 @@ def _export_page_material_image_regions(
         json_path = item_dir / _item_filename(image_title, "json")
         stream_item.update(
             {
+                **_image_material_role(stream_item),
                 "image_title": image_title,
                 "context_title": clean_context_title,
                 "nearest_heading": context_title,
@@ -4218,6 +4271,7 @@ def package_module_artifacts(
                     image_path.write_bytes(image_bytes)
                 item = {
                     **image,
+                    **_image_material_role(image),
                     "section_path": section_path,
                     "folder_parts": path_parts,
                     "review_index_folder": subfolder["folder_title"] if subfolder else None,
