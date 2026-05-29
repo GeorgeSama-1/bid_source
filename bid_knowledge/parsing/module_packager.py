@@ -951,6 +951,28 @@ def _image_material_role(image: dict[str, Any]) -> dict[str, str]:
     return {"material_role": "image", "image_kind": image_kind}
 
 
+def _remove_exported_image_artifacts(image: dict[str, Any]) -> None:
+    for key in ("file_path", "json_path"):
+        value = image.get(key)
+        if not value:
+            continue
+        path = Path(str(value))
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def _drop_decorative_exported_image(image: dict[str, Any]) -> bool:
+    role = _image_material_role(image)
+    image.update(role)
+    if role.get("material_role") != "decorative_image":
+        return False
+    _remove_exported_image_artifacts(image)
+    return True
+
+
 def _classify_image_kind(image: dict[str, Any]) -> str:
     explicit_kind = str(image.get("image_kind") or image.get("image_role") or image.get("kind") or "").strip().lower()
     if explicit_kind:
@@ -1511,7 +1533,9 @@ def _is_suppressed_material_text(item: dict[str, Any]) -> bool:
 
 
 def _is_decorative_material_image(item: dict[str, Any]) -> bool:
-    return str(item.get("material_role") or "") == "decorative_image"
+    if str(item.get("material_role") or "") == "decorative_image":
+        return True
+    return _classify_image_kind(item) in {"decorative_image", "seal_or_stamp", "watermark"}
 
 
 def _is_field_label_text(text: str) -> bool:
@@ -2206,6 +2230,7 @@ def _write_material_package(
             )
         ]
     _retitle_images_for_material_context(material_dir, image_items, subfolder["folder_title"])
+    image_items = [image for image in image_items if not _drop_decorative_exported_image(image)]
     _retarget_table_image_refs_to_material_images(table_items, image_items, material_dir)
     submaterial_items: list[dict[str, Any]] = []
     submaterial_ranges = _submaterial_ranges(submaterial_items)
@@ -2377,7 +2402,7 @@ def _copy_image_item_for_submaterial(
     image_index: int,
     image_bytes_resolver: Callable[[dict[str, Any]], tuple[bytes, str]] | None,
     doc: Any,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     image_title = _sanitize_item_title(child_title, f"图{image_index}")
     item_dir = ensure_dir(child_dir / "image_items")
     image_bytes, ext = _resolve_image_bytes(image, image_bytes_resolver, doc)
@@ -2398,7 +2423,8 @@ def _copy_image_item_for_submaterial(
         "json_path": str(json_path),
         "_top_y": float(image.get("_top_y") or 0.0),
     }
-    item.update(_image_material_role(item))
+    if _drop_decorative_exported_image(item):
+        return None
     write_json(json_path, item)
     return item
 
@@ -2494,18 +2520,22 @@ def _write_attachment_submaterials(
             for table_index, table in enumerate(child_tables, start=1)
         ]
         copied_images = [
-            _copy_image_item_for_submaterial(
-                image=image,
-                child_dir=child_dir,
-                child_title=child_title,
-                section_path=section_path,
-                folder_parts=path_parts + [child_title],
-                pdf_path=pdf_path,
-                image_index=image_index,
-                image_bytes_resolver=image_bytes_resolver,
-                doc=doc,
-            )
+            copied_image
             for image_index, image in enumerate(child_images, start=1)
+            if (
+                copied_image := _copy_image_item_for_submaterial(
+                    image=image,
+                    child_dir=child_dir,
+                    child_title=child_title,
+                    section_path=section_path,
+                    folder_parts=path_parts + [child_title],
+                    pdf_path=pdf_path,
+                    image_index=image_index,
+                    image_bytes_resolver=image_bytes_resolver,
+                    doc=doc,
+                )
+            )
+            is not None
         ]
         _write_material_package(
             material_dir=child_dir,
@@ -2872,6 +2902,8 @@ def _package_compound_materials(
                             "json_path": str(json_path),
                             "_top_y": top_y,
                         }
+                        if _drop_decorative_exported_image(item):
+                            continue
                         write_json(json_path, item)
                         image_items.append(item)
 
@@ -3061,6 +3093,8 @@ def _package_compound_materials(
                         "json_path": str(json_path),
                         "_top_y": top_y,
                     }
+                    if _drop_decorative_exported_image(item):
+                        continue
                     write_json(json_path, item)
                     image_items.append(item)
 
@@ -3405,7 +3439,8 @@ def _export_page_material_image_regions(
                 "payload_ref": str(json_path.relative_to(material_dir)),
             }
         )
-        stream_item.update(_image_material_role(stream_item))
+        if _drop_decorative_exported_image(stream_item):
+            continue
         write_json(json_path, stream_item)
         exported.append(stream_item)
     return exported
@@ -3737,6 +3772,8 @@ def _write_parent_preface_packages(
                 "json_path": str(json_path),
                 "_top_y": top_y,
             }
+            if _drop_decorative_exported_image(item):
+                continue
             write_json(json_path, item)
             image_items.append(item)
 
@@ -4343,9 +4380,10 @@ def package_module_artifacts(
                     "review_status": "pending",
                     "file_path": str(image_path),
                 }
-                item.update(_image_material_role(item))
                 json_path = item_dir / _item_filename(image_title, "json")
                 item["json_path"] = str(json_path)
+                if _drop_decorative_exported_image(item):
+                    continue
                 write_json(json_path, item)
                 images_index.append(item)
                 if subfolder:

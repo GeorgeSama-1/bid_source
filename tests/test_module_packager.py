@@ -5,7 +5,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from pathlib import Path
 
-from bid_knowledge.parsing.module_packager import _backfill_missing_material_indexes, package_module_artifacts
+from bid_knowledge.parsing.module_packager import _backfill_missing_material_indexes, _write_material_markdown, package_module_artifacts
 from bid_knowledge.schemas.models import PageMaterialItem, ParsedTable, PdfTextBlock, ReusableCandidate
 
 
@@ -3903,7 +3903,7 @@ def test_package_module_artifacts_suppresses_text_inside_exported_image_regions(
     assert "![系统架构图_图1](image_items/系统架构图_图1.png)" in material_md
 
 
-def test_package_module_artifacts_keeps_decorative_image_json_but_skips_markdown(tmp_path: Path) -> None:
+def test_package_module_artifacts_skips_decorative_image_exports(tmp_path: Path) -> None:
     candidates = [
         _candidate(
             "技术文件 / 技术特性参数表",
@@ -3941,15 +3941,12 @@ def test_package_module_artifacts_keeps_decorative_image_json_but_skips_markdown
     material_dir = tmp_path / "modules" / "技术特性参数表"
     material_md = (material_dir / "material.md").read_text(encoding="utf-8")
     ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
-    image_item = json.loads((material_dir / "image_items" / "技术特性参数表_图1.json").read_text(encoding="utf-8"))
-    ordered_image = next(item for item in ordered if item.get("image_id") == "stamp-img")
 
     assert "正文内容" in material_md
     assert "![技术特性参数表_图1]" not in material_md
-    assert image_item["image_kind"] == "seal_or_stamp"
-    assert image_item["material_role"] == "decorative_image"
-    assert ordered_image["material_role"] == "decorative_image"
-    assert ordered_image["suppressed_reason"] == "decorative_image"
+    assert not (material_dir / "image_items" / "技术特性参数表_图1.png").exists()
+    assert not (material_dir / "image_items" / "技术特性参数表_图1.json").exists()
+    assert not any(item.get("image_id") == "stamp-img" for item in ordered)
 
 
 def test_package_module_artifacts_classifies_red_stamp_image_pixels_as_decorative(tmp_path: Path) -> None:
@@ -4001,14 +3998,42 @@ def test_package_module_artifacts_classifies_red_stamp_image_pixels_as_decorativ
     material_dir = tmp_path / "modules" / "技术特性参数表"
     material_md = (material_dir / "material.md").read_text(encoding="utf-8")
     ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
-    image_item = json.loads((material_dir / "image_items" / "技术特性参数表_图1.json").read_text(encoding="utf-8"))
-    ordered_image = next(item for item in ordered if item.get("image_id") == "stamp-img")
 
     assert "正文内容" in material_md
     assert "![技术特性参数表_图1]" not in material_md
-    assert image_item["image_kind"] == "seal_or_stamp"
-    assert image_item["material_role"] == "decorative_image"
-    assert ordered_image["image_kind"] == "seal_or_stamp"
+    assert not (material_dir / "image_items" / "技术特性参数表_图1.png").exists()
+    assert not (material_dir / "image_items" / "技术特性参数表_图1.json").exists()
+    assert not any(item.get("image_id") == "stamp-img" for item in ordered)
+
+
+def test_write_material_markdown_skips_stamp_images_without_material_role(tmp_path: Path) -> None:
+    image_path = tmp_path / "image_items" / "stamp.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"stamp")
+    _write_material_markdown(
+        tmp_path,
+        "技术特性参数表",
+        [
+            {
+                "type": "text",
+                "item_type": "text",
+                "text": "正文内容",
+                "source_type": "pdf_text",
+            },
+            {
+                "type": "image",
+                "item_type": "image",
+                "image_id": "stamp-img",
+                "image_title": "技术特性参数表_图1",
+                "image_kind": "seal_or_stamp",
+                "file_path": str(image_path),
+            },
+        ],
+    )
+
+    material_md = (tmp_path / "material.md").read_text(encoding="utf-8")
+    assert "正文内容" in material_md
+    assert "![技术特性参数表_图1]" not in material_md
 
 
 def test_package_module_artifacts_keeps_content_images_in_markdown(tmp_path: Path) -> None:
