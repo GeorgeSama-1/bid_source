@@ -1,6 +1,7 @@
 import json
 import re
 import sys
+from io import BytesIO
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -3949,6 +3950,65 @@ def test_package_module_artifacts_keeps_decorative_image_json_but_skips_markdown
     assert image_item["material_role"] == "decorative_image"
     assert ordered_image["material_role"] == "decorative_image"
     assert ordered_image["suppressed_reason"] == "decorative_image"
+
+
+def test_package_module_artifacts_classifies_red_stamp_image_pixels_as_decorative(tmp_path: Path) -> None:
+    from PIL import Image, ImageDraw
+
+    candidates = [
+        _candidate(
+            "技术文件 / 技术特性参数表",
+            1,
+            1,
+            "技术特性参数表",
+        )
+    ]
+    blocks = [
+        PdfTextBlock(block_id="title", page_no=1, text="技术特性参数表", bbox=[20, 70, 220, 92], block_no=1),
+        PdfTextBlock(block_id="body", page_no=1, text="正文内容", bbox=[20, 120, 220, 140], block_no=2),
+    ]
+    stamp = Image.new("RGBA", (160, 160), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(stamp)
+    for offset in range(5):
+        draw.ellipse([12 + offset, 12 + offset, 148 - offset, 148 - offset], outline=(255, 0, 0, 255), width=1)
+    draw.line([35, 80, 125, 80], fill=(255, 0, 0, 255), width=5)
+    draw.line([80, 35, 80, 125], fill=(255, 0, 0, 255), width=5)
+    draw.polygon([(80, 52), (88, 72), (110, 72), (92, 85), (100, 108), (80, 94), (60, 108), (68, 85), (50, 72), (72, 72)], outline=(255, 0, 0, 255))
+    buffer = BytesIO()
+    stamp.save(buffer, format="PNG")
+    stamp_bytes = buffer.getvalue()
+    images = [
+        {
+            "image_id": "stamp-img",
+            "page_no": 1,
+            "xref": 31,
+            "width": 160,
+            "height": 160,
+            "rect": [300, 520, 420, 640],
+            "ext": "png",
+        }
+    ]
+
+    package_module_artifacts(
+        candidates=candidates,
+        blocks=blocks,
+        tables=[],
+        images=images,
+        out_dir=tmp_path,
+        image_bytes_resolver=lambda item: (stamp_bytes, item.get("ext", "png")),
+    )
+
+    material_dir = tmp_path / "modules" / "技术特性参数表"
+    material_md = (material_dir / "material.md").read_text(encoding="utf-8")
+    ordered = json.loads((material_dir / "ordered_material.json").read_text(encoding="utf-8"))["items"]
+    image_item = json.loads((material_dir / "image_items" / "技术特性参数表_图1.json").read_text(encoding="utf-8"))
+    ordered_image = next(item for item in ordered if item.get("image_id") == "stamp-img")
+
+    assert "正文内容" in material_md
+    assert "![技术特性参数表_图1]" not in material_md
+    assert image_item["image_kind"] == "seal_or_stamp"
+    assert image_item["material_role"] == "decorative_image"
+    assert ordered_image["image_kind"] == "seal_or_stamp"
 
 
 def test_package_module_artifacts_keeps_content_images_in_markdown(tmp_path: Path) -> None:

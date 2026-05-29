@@ -979,7 +979,66 @@ def _classify_image_kind(image: dict[str, Any]) -> str:
         return "watermark"
     if normalized_labels & {"decorative", "decoration", "decorativeimage", "background"}:
         return "decorative_image"
+    if _looks_like_red_stamp_image(image):
+        return "seal_or_stamp"
     return "content_image"
+
+
+def _looks_like_red_stamp_image(image: dict[str, Any]) -> bool:
+    file_path = image.get("file_path")
+    if not file_path:
+        return False
+    path = Path(str(file_path))
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    try:
+        with Image.open(path) as source:
+            img = source.convert("RGBA")
+            img.thumbnail((160, 160))
+            data = img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata()
+            pixels = list(data)
+    except Exception:
+        return False
+    if not pixels:
+        return False
+    rect_width, rect_height = _image_region_size(image)
+    intrinsic_width = int(image.get("width") or 0)
+    intrinsic_height = int(image.get("height") or 0)
+    shape_width = rect_width or intrinsic_width
+    shape_height = rect_height or intrinsic_height
+    if shape_width <= 0 or shape_height <= 0:
+        return False
+    aspect = shape_width / max(shape_height, 1.0)
+    if not 0.55 <= aspect <= 1.8:
+        return False
+    if (rect_width and rect_height and max(rect_width, rect_height) > 280) or max(intrinsic_width, intrinsic_height) > 1200:
+        return False
+    visible = 0
+    red = 0
+    background = 0
+    for r, g, b, a in pixels:
+        if a <= 20:
+            background += 1
+            continue
+        visible += 1
+        is_dark_bg = r <= 35 and g <= 35 and b <= 35
+        is_light_bg = r >= 235 and g >= 235 and b >= 235
+        is_red = r >= 120 and r >= g * 1.7 and r >= b * 1.7 and r - max(g, b) >= 50
+        if is_red:
+            red += 1
+        elif is_dark_bg or is_light_bg:
+            background += 1
+    if visible <= 0 or red <= 0:
+        return False
+    non_background = max(visible - background, 1)
+    red_visible_ratio = red / visible
+    red_foreground_ratio = red / non_background
+    background_ratio = background / len(pixels)
+    return red_visible_ratio >= 0.025 and red_foreground_ratio >= 0.55 and background_ratio >= 0.35
 
 
 def _image_text_role_for_bbox(page_no: int, bbox: Any, image_regions: dict[int, list[dict[str, Any]]]) -> dict[str, str]:
@@ -2339,6 +2398,7 @@ def _copy_image_item_for_submaterial(
         "json_path": str(json_path),
         "_top_y": float(image.get("_top_y") or 0.0),
     }
+    item.update(_image_material_role(item))
     write_json(json_path, item)
     return item
 
@@ -3335,7 +3395,6 @@ def _export_page_material_image_regions(
         json_path = item_dir / _item_filename(image_title, "json")
         stream_item.update(
             {
-                **_image_material_role(stream_item),
                 "image_title": image_title,
                 "context_title": clean_context_title,
                 "nearest_heading": context_title,
@@ -3346,6 +3405,7 @@ def _export_page_material_image_regions(
                 "payload_ref": str(json_path.relative_to(material_dir)),
             }
         )
+        stream_item.update(_image_material_role(stream_item))
         write_json(json_path, stream_item)
         exported.append(stream_item)
     return exported
@@ -4271,7 +4331,6 @@ def package_module_artifacts(
                     image_path.write_bytes(image_bytes)
                 item = {
                     **image,
-                    **_image_material_role(image),
                     "section_path": section_path,
                     "folder_parts": path_parts,
                     "review_index_folder": subfolder["folder_title"] if subfolder else None,
@@ -4284,6 +4343,7 @@ def package_module_artifacts(
                     "review_status": "pending",
                     "file_path": str(image_path),
                 }
+                item.update(_image_material_role(item))
                 json_path = item_dir / _item_filename(image_title, "json")
                 item["json_path"] = str(json_path)
                 write_json(json_path, item)
